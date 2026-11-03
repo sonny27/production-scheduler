@@ -1,0 +1,16 @@
+# Local Business Central dependencies, debug state and editor settings
+.alpackages/
+.snapshots/
+.vscode/
+
+# Compiled extension packages
+*.app
+*.runtimepackage
+
+# Local credentials and certificates
+.env
+.env.*
+*.pfx
+*.p12
+*.pem
+*.key

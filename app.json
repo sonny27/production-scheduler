@@ -1,0 +1,32 @@
+{
+  "id": "0f3f0b03-0db2-4ea6-821e-bb6e371f4da5",
+  "name": "Production Scheduler",
+  "publisher": "Cloud Factory",
+  "version": "2.0.1.0",
+  "brief": "Visual production routing and capacity scheduling",
+  "description": "Shared draft production schedule scenarios with calendar-based planning, routing details and explicit atomic per-order Commit to BC.",
+  "privacyStatement": "",
+  "EULA": "",
+  "help": "",
+  "url": "",
+  "logo": "",
+  "dependencies": [],
+  "screenshots": [],
+  "platform": "1.0.0.0",
+  "application": "29.0.0.0",
+  "idRanges": [
+    {
+      "from": 91300,
+      "to": 91599
+    }
+  ],
+  "resourceExposurePolicy": {
+    "allowDebugging": true,
+    "allowDownloadingSource": true,
+    "includeSourceInSymbolFile": true
+  },
+  "runtime": "18.0",
+  "features": [
+    "NoImplicitWith"
+  ]
+}
