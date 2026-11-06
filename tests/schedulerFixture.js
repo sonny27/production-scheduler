@@ -3,6 +3,7 @@
     const labels = {
         operationDetails: "Prod. Order Routing Line", operationNo: "Operation No.", description: "Description",
         problem: "Scheduling problem",
+        noWorkingPortion: "No working-calendar portion is visible. This marker is not the operation duration.",
         problemScope: "%1 problem steps are hidden. Capacity totals and Auto Schedule are unchanged. Enable Include Problem Steps in Schedule Options to show them.",
         startingDateTime: "Starting Date-Time", endingDateTime: "Ending Date-Time", status: "Status",
         orderNo: "Prod. Order No.", previousOperation: "Previous Operation No.", nextOperation: "Next Operation No.",
@@ -13,24 +14,34 @@
         dropHelp: "Drag an unscheduled step onto its assigned resource row. Drag a timeline step horizontally to adjust its draft start. Select a step to show routing links.",
         dropInvalid: "Drop an editable unplanned step onto its assigned resource within the displayed dates and hours.",
         nonWorkingScope: "%1 non-working days hidden. %2 matching operations fall entirely on hidden days. %3 hidden days contain allocated capacity. Use Show All Days.",
+        hiddenDaysScope: "%1 days hidden. %2 matching operations fall entirely on hidden days. %3 hidden days contain allocated capacity. Use Show Weekends or Show All Days.",
         noWorkingDays: "No working days in this date range. Use Show All Days or change Schedule Options; check resource calendars.",
         hiddenClippedStart: "The actual start is outside visible periods. Use Schedule start in the details.",
         hiddenDragRange: "Drop within visible dates and hours, or enter the start manually.",
-        title: "Production Scheduler", currentTime: "Current time", unconfirmed: "Unscheduled / awaiting planner confirmation",
+        title: "Production Scheduler", currentTime: "Current time", unconfirmed: "Unscheduled", unscheduled: "Unscheduled",
         empty: "No operations in this view.", schedule: "Schedule start", confirm: "Confirm existing dates",
         order: "Open production order", routing: "Schedule Details", start: "Start", end: "Finish", due: "Due",
+        openBCRouting: "Open BC Routing",
         draftDetails: "Schedule Details", editDraft: "Edit Draft Start", zoomDocument: "Zoom to Document",
         resetDraft: "Reset Order Draft from BC", commitOrder: "Commit This Order to BC", draftScenario: "Draft scenario",
         hour: "Hour", day: "Day", week: "Week", month: "Month", busy: "Working...", failed: "Request failed; refresh before retrying.",
-        hourScope: "Hour view hides off-hours. Daily capacity is unchanged. %1 matching operations are outside these hours; use Day view.",
-        hourDragRange: "Drop within displayed hours, or enter the start manually.",
-        hourClippedStart: "The actual start is outside displayed hours. Use Schedule start instead of dragging this clipped bar.",
-        capacity: "Daily hours: allocated / available", missingCalendar: "No calculated calendar entries.",
+        hourScope: "Hour view shows the full day. Light-blue intervals are non-working time from each resource calendar.",
+        hourDragRange: "Drop within the visible timeline, or enter the start manually.",
+        hourClippedStart: "The actual start is outside the visible timeline. Use Schedule start instead of dragging this clipped bar.",
+        capacity: "Daily hours: allocated / available", noCapacity: "No capacity", missingCalendar: "No calculated calendar entries.",
         blocked: "Blocked resource", direct: "Direct load only, not additional capacity.",
-        legend: "Top: unscheduled steps. Timeline: scheduled or finished steps. Red border: scheduling problem. Red capacity: overloaded. Grey: non-working.",
+        legend: "Unscheduled steps appear in an Unscheduled row under each work centre. Scheduled or finished steps appear on resource rows. Red border: scheduling problem. Grey fill: daily capacity utilisation. Light red: overloaded. Empty days stay white.",
         minutes: "minutes", available: "Available", allocated: "Allocated", remaining: "Remaining",
         select: "Select an operation.", late: "Late", pending: "Awaiting confirmation", confirmed: "Confirmed", finished: "Finished",
-        invalidDate: "Enter a valid start date and time.", search: "Find order, item or operation"
+        invalidDate: "Enter a valid start date and time.", search: "Find order, item or operation",
+        selectionToolbar: "Step selection", selectedCount: "%1 selected", selectChain: "Select Routing Chain",
+        selectFollowing: "Select Following Steps", clearSelection: "Clear Selection", lockSelected: "Lock Selected",
+        unlockSelected: "Unlock Selected", lockStep: "Lock Position", unlockStep: "Unlock Position",
+        positionLocked: "Position locked", lockedNoEdit: "This step's position is locked. Unlock it before dragging or editing its start.",
+        noSelection: "Select at least one step first.", noLockChange: "The selected steps already have this lock state.",
+        selectionUnavailable: "Selection actions are unavailable.", invalidSelectionCommand: "Unsupported selection command.",
+        saving: "Saving draft...", saved: "Draft saved.", saveFailed: "The draft change was not saved. Refresh before retrying.",
+        viewStateFailed: "The scroll position and selection could not be remembered for this session."
     };
     const days = [
         { date: "2026-11-03", available: 480, allocated: 600 },
@@ -38,18 +49,25 @@
         { date: "2026-11-05", available: 0, allocated: 0 }
     ];
     const windows = [
-        { start: "2026-11-03T08:00:00", end: "2026-11-03T16:00:00" },
-        { start: "2026-11-04T08:00:00", end: "2026-11-04T16:00:00" }
+        { start: "2026-11-03T08:00:00", end: "2026-11-03T16:00:00", minutes: 480 },
+        { start: "2026-11-04T08:00:00", end: "2026-11-04T16:00:00", minutes: 480 }
     ];
     const resources = [
-        { id: "W:100", parent: "", name: "100 - Assembly department", summary: true, direct: false, windows, days },
+        { id: "W:100", parent: "", name: "100 - Assembly department", summary: true, direct: false, windows, days,
+            loadWindows: [{ start: "2026-11-03T08:00:00", end: "2026-11-03T12:00:00", minutes: 600 },
+                { start: "2026-11-04T08:00:00", end: "2026-11-04T10:00:00", minutes: 120 }] },
         { id: "D:100", parent: "W:100", name: "100 - Direct work centre operations", direct: true, windows,
+            loadWindows: [{ start: "2026-11-03T08:00:00", end: "2026-11-03T10:00:00", minutes: 120 }],
             days: days.map(day => ({ ...day, available: 0, allocated: day.date === "2026-11-03" ? 120 : 0 })) },
-        { id: "M:100", parent: "W:100", name: "100 - CNC machine", direct: false, windows, days }
+        { id: "M:100", parent: "W:100", name: "100 - CNC machine", direct: false, windows, days,
+            loadWindows: [{ start: "2026-11-03T08:00:00", end: "2026-11-03T12:00:00", minutes: 600 },
+                { start: "2026-11-04T08:00:00", end: "2026-11-04T10:00:00", minutes: 120 }] }
     ];
     const operation = (id, order, from, to, resource, confirmed, statusId) => ({
-        id, order, operation: "10", resource, confirmed, statusId, version: "1", finished: false, problems: [],
-        draftChanged: false, canReset: true, canCommit: false,
+        id, order, operation: "10", resource, workCenter: "W:100",
+        workMinutes: from && to ? (Date.parse(`${to}Z`) - Date.parse(`${from}Z`)) / 60000 : 60,
+        confirmed, statusId, version: "1", finished: false, problems: [],
+        draftChanged: false, canReset: true, canCommit: false, positionLocked: false,
         description: "Assembly <script>not executable</script>", item: "ITEM-100", quantity: 10,
         previousOperation: "", nextOperation: "20",
         routingReference: 10000, routingNo: "ROUTE-100", predecessors: [], successors: [], orderScheduled: confirmed,
@@ -64,6 +82,7 @@
         currentTime: "2026-11-03T10:15:00",
         hideNonWorkingDays: false,
         includeProblemSteps: true,
+        showSearch: true, showDisplayRange: true, showStepDetails: true,
         documentFocus: false, fitToWindow: false, viewChange: "", selectedOperationId: "", focusNotice: "",
         hourWindows: Array.from({ length: 7 }, () => ({ start: 7 * 3600000, end: 18 * 3600000 })),
         navigation: { start: "2026-11-03T00:00:00", days: 90, viewDays: 3, offset: 0, caption: "Display range" },
@@ -79,6 +98,698 @@
         ]
     };
     window.fixture = { payload, calls: [], failNext: false, bcOperations: structuredClone(payload.operations) };
+    window.fixture.assertOperationStacking = async function () {
+        const original = structuredClone(fixture.payload);
+        const baseline = JSON.stringify(fixture.bcOperations);
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        const settle = () => new Promise(resolve => {
+            setTimeout(resolve, 100);
+            requestAnimationFrame(() => requestAnimationFrame(resolve));
+        });
+        const check = () => {
+            for (const lane of document.querySelectorAll(".cf-lane")) {
+                const bars = [...lane.querySelectorAll(".cf-operation, .cf-unscheduled-operation")];
+                const bounds = lane.getBoundingClientRect();
+                for (let index = 0; index < bars.length; index++) {
+                    const a = bars[index].getBoundingClientRect();
+                    assert(a.top >= bounds.top && a.bottom <= bounds.bottom + 0.1, "Expanded lane clips a bar");
+                    for (const other of bars.slice(index + 1)) {
+                        if (bars[index].dataset.operation === other.dataset.operation) {
+                            assert(bars[index].style.top === other.style.top, "Fragments changed lanes");
+                            continue;
+                        }
+                        const b = other.getBoundingClientRect();
+                        assert(!(a.left < b.right - 0.1 && b.left < a.right - 0.1 &&
+                            a.top < b.bottom - 0.1 && b.top < a.bottom - 0.1), "Operation bars cover each other");
+                    }
+                }
+            }
+        };
+        try {
+            const p = structuredClone(original);
+            p.fitToWindow = true;
+            p.showSearch = false;
+            p.hideNonWorkingDays = p.hideWeekends = false;
+            p.operations = Array.from({ length: 20 }, (_, index) => ({
+                ...structuredClone(original.operations[0]), id: `stack-${index}`, resource: "D:100",
+                start: "2026-11-03T08:00:00", end: "2026-11-03T08:01:00", workMinutes: 1
+            }));
+            p.operations.push(...[2, 4].map((minutes, index) => ({
+                ...structuredClone(p.operations[0]), id: `adjacent-${index}`,
+                start: `2026-11-03T08:0${minutes}:00`, end: `2026-11-03T08:0${minutes + 1}:00`
+            })));
+            p.operations.push(...p.operations.slice(0, 3).map((item, index) => ({
+                ...structuredClone(item), id: `pending-stack-${index}`, confirmed: false
+            })));
+            for (const viewMode of ["hour", "day", "week", "month"]) {
+                for (const excludeNonWorkingHours of [false, true]) {
+                    p.viewMode = viewMode;
+                    p.excludeNonWorkingHours = excludeNonWorkingHours;
+                    fixture.payload = p;
+                    LoadSchedule(p);
+                    await settle();
+                    check();
+                    const lane = document.querySelector('[data-resource="D:100"] .cf-lane');
+                    assert(lane.clientHeight >= 20 * 34 + 8, "Dense operations did not expand the row");
+                    assert(document.querySelector(".cf-unscheduled-row .cf-lane").clientHeight >= 3 * 34 + 8,
+                        "Unscheduled operations did not expand the row");
+                    const grid = document.querySelector(".cf-grid");
+                    grid.style.width = "400px";
+                    await settle();
+                    check();
+                    grid.style.width = "1800px";
+                    await settle();
+                    check();
+                }
+            }
+            p.operations = [p.operations[0]];
+            fixture.payload = p;
+            LoadSchedule(p);
+            await settle();
+            assert(document.querySelector('[data-resource="D:100"] .cf-lane').clientHeight === 42,
+                "Row did not shrink after removing overlaps");
+            assert(JSON.stringify(fixture.bcOperations) === baseline, "Stacking changed BC data");
+            return "Operation stacking passed: all views, dense rows, minimum-width bars, working portions, resize and shrink.";
+        } finally {
+            fixture.payload = original;
+            LoadSchedule(original);
+            await settle();
+        }
+    };
+    window.fixture.assertNonWorkingDayShading = function () {
+        const original = structuredClone(fixture.payload);
+        const p = structuredClone(original);
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        const shades = id => [...document.querySelectorAll(`[data-resource="${id}"] .cf-nonworking-day`)];
+        try {
+            fixture.payload = p;
+            for (const view of ["hour", "day", "week", "month"]) {
+                p.viewMode = view;
+                LoadSchedule(p);
+                for (const id of ["M:100", "D:100"]) {
+                    assert(shades(id).length === 1 && shades(id)[0].dataset.date === "2026-11-05",
+                        "Non-working days must follow the resource calendar, including the direct row's parent");
+                    assert(getComputedStyle(shades(id)[0]).backgroundColor === "rgb(252, 252, 250)",
+                        "Non-working day is not off-white");
+                    const timeline = document.querySelector(`[data-resource="${id}"]`);
+                    const cell = [...timeline.querySelectorAll(".cf-capacity-day")].find(node => node.dataset.date === "2026-11-05");
+                    assert(Math.abs(cell.getBoundingClientRect().left - shades(id)[0].getBoundingClientRect().left) < 1 &&
+                        Math.abs(cell.getBoundingClientRect().width - shades(id)[0].getBoundingClientRect().width) < 1,
+                        "Non-working day does not align with its date");
+                }
+                assert(!document.querySelector(".cf-unscheduled-row .cf-nonworking-day"),
+                    "Unscheduled rows must retain their yellow background");
+                p.resources.find(resource => resource.id === "M:100").missingCalendar = true;
+                LoadSchedule(p);
+                assert(shades("M:100").length === 0, "Missing calendar must not imply a non-working day");
+                delete p.resources.find(resource => resource.id === "M:100").missingCalendar;
+                p.hideNonWorkingDays = true;
+                LoadSchedule(p);
+                assert(!document.querySelector(".cf-nonworking-day"), "Hidden days must not leave background shading");
+                p.hideNonWorkingDays = false;
+            }
+            p.end = "2026-11-08T00:00:00";
+            p.navigation.viewDays = 5;
+            for (const resource of p.resources) {
+                resource.days.push({date: "2026-11-06", available: 0, allocated: 0},
+                    {date: "2026-11-07", available: 0, allocated: 0});
+            }
+            for (const view of ["hour", "day", "week", "month"]) {
+                p.viewMode = view;
+                LoadSchedule(p);
+                const weekend = shades("M:100").find(node => node.dataset.date === "2026-11-07");
+                assert(weekend.classList.contains("cf-nonworking-weekend") &&
+                    getComputedStyle(weekend).backgroundColor === "rgb(248, 251, 254)",
+                    "Non-working weekend must use very pale blue");
+                assert(!shades("M:100").find(node => node.dataset.date === "2026-11-06")
+                    .classList.contains("cf-nonworking-weekend"), "Weekday incorrectly uses weekend colour");
+            }
+            return { views: 4, offWhite: true, calendarBased: true, directParentCalendar: true, hiddenDays: true, missingCalendar: true };
+        } finally {
+            fixture.payload = original;
+            LoadSchedule(original);
+        }
+    };
+    window.fixture.assertHourlyCapacity = function () {
+        const original = structuredClone(fixture.payload);
+        const p = structuredClone(original);
+        const originalSearch = document.querySelector(".cf-search input")?.value || "";
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        try {
+            p.viewMode = "hour";
+            fixture.payload = p;
+            LoadSchedule(p);
+            const fills = () => [...document.querySelectorAll('[data-resource="M:100"] .cf-hour-load')];
+            const starts = fills().map(node => node.dataset.start);
+            assert(starts.length === 6, "Hourly fill must use only hours with allocated work");
+            assert(!starts.includes("2026-11-03T15:00:00"), "An empty hour received daily capacity fill");
+            assert(starts.includes("2026-11-04T09:00:00"), "A timed allocation is missing");
+            const full = fills().find(node => node.dataset.start === "2026-11-04T09:00:00");
+            assert(getComputedStyle(full.querySelector(".cf-capacity-meter"), "::after").backgroundColor === "rgb(244, 202, 202)",
+                "100% hourly capacity must use solid light red");
+            const overloaded = fills().find(node => node.dataset.start === "2026-11-03T09:00:00");
+            assert(getComputedStyle(overloaded.querySelector(".cf-capacity-meter"), "::after").backgroundImage.includes("repeating-linear-gradient"),
+                "Overloaded hourly capacity must use stripes");
+            assert(!document.querySelector(".cf-hour-capacity-percent") &&
+                !document.querySelector('[data-resource="M:100"] .cf-capacity-percent'),
+                "Hour view must not show percentage labels");
+            const hourlyHover = document.querySelector('[data-resource="M:100"] .cf-hour-capacity-tooltip[data-start="2026-11-03T09:00:00"]');
+            assert(hourlyHover.title.includes("250%") && hourlyHover.textContent === "",
+                "Hourly percentage must appear only in the hover tooltip");
+            const emptyHover = document.querySelector('[data-resource="M:100"] .cf-hour-capacity-tooltip[data-start="2026-11-03T15:00:00"]');
+            assert(emptyHover.title.includes("0%"), "Empty working hours must have a utilisation tooltip");
+            const search = document.querySelector(".cf-search input");
+            search.value = "NO MATCH";
+            search.dispatchEvent(new Event("input"));
+            assert(document.querySelectorAll(".cf-operation").length === 0, "Search did not hide operations");
+            assert(JSON.stringify(fills().map(node => node.dataset.start)) === JSON.stringify(starts),
+                "Filtering operations changed occupied hourly capacity");
+            p.viewMode = "day";
+            LoadSchedule(p);
+            assert(!document.querySelector(".cf-hour-load"), "Day view must retain daily fills");
+            return { timedHourlyFill: true, emptyHoursUnfilled: true, filtersPreserveLoad: true, dayViewUnchanged: true };
+        } finally {
+            const search = document.querySelector(".cf-search input");
+            if (search) {
+                search.value = originalSearch;
+                search.dispatchEvent(new Event("input"));
+            }
+            fixture.payload = original;
+            LoadSchedule(original);
+        }
+    };
+    window.fixture.assertWorkingPortions = async function () {
+        const original = structuredClone(fixture.payload);
+        const p = structuredClone(original);
+        const core = CFSchedulerCore;
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        const bars = id => [...document.querySelectorAll(".cf-operation")].filter(node => node.dataset.operation === id);
+        const settle = async () => {
+            for (let attempt = 0; document.getElementById("controlAddIn").getAttribute("aria-busy") === "true"; attempt++) {
+                if (attempt === 100) throw new Error("Split operation bridge did not settle");
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+        };
+        p.start = "2027-10-01T00:00:00";
+        p.end = "2027-10-05T00:00:00";
+        p.navigation = {...p.navigation, start: p.start, viewDays: 4, offset: 0};
+        for (const resource of p.resources) {
+            resource.windows = [
+                {start: "2027-10-01T08:00:00", end: "2027-10-01T16:00:00", minutes: 480},
+                {start: "2027-10-04T08:00:00", end: "2027-10-04T16:00:00", minutes: 480}
+            ];
+            resource.days = Array.from({length: 4}, (_, index) => ({
+                date: core.formatCivil(core.parseCivil(p.start) + index * core.day).slice(0, 10),
+                available: resource.direct || index === 1 || index === 2 ? 0 : 480,
+                allocated: index === 0 ? 15 : index === 3 ? 4 : 0
+            }));
+        }
+        const a = {...p.operations[0], start: "2027-10-01T15:45:00", end: "2027-10-04T08:04:00",
+            predecessors: [], successors: ["op-next"], nextOperation: "40"};
+        const b = {...a, id: "op-next", operation: "40", start: "2027-10-04T08:04:00",
+            end: "2027-10-04T08:30:00", predecessors: [a.id], successors: [], previousOperation: "10"};
+        p.operations = [a, b];
+        const before = JSON.stringify(p.operations);
+        try {
+            for (const view of ["hour", "day", "week", "month"]) {
+                for (const hideWeekends of [false, true]) {
+                    for (const exclude of [false, true]) {
+                        Object.assign(p, {viewMode: view, hideWeekends, excludeNonWorkingHours: exclude});
+                        fixture.payload = p;
+                        LoadSchedule(p);
+                        assert(bars(a.id).length === (exclude ? 2 : 1), "Incorrect working-portion count");
+                        assert(bars(a.id).every(node => node.style.top === bars(a.id)[0].style.top),
+                            "Fragments of the same operation occupy different tracks");
+                    }
+                }
+            }
+            assert(JSON.stringify(p.operations) === before, "Display option changed operation dates");
+            p.viewMode = "hour";
+            p.excludeNonWorkingHours = true;
+            LoadSchedule(p);
+            bars(a.id)[1].click();
+            await settle();
+            assert(bars(a.id).every(node => node.classList.contains("cf-selected")),
+                "Selecting a fragment did not select the whole operation");
+            const path = document.querySelector(".cf-routing-link");
+            assert(path, "Split operation lost its routing link");
+            const from = bars(a.id).at(-1).getBoundingClientRect();
+            const to = bars(b.id)[0].getBoundingClientRect();
+            const grid = document.querySelector(".cf-grid").getBoundingClientRect();
+            const first = path.getPointAtLength(0);
+            const last = path.getPointAtLength(path.getTotalLength());
+            assert(Math.abs(first.x - (from.right - grid.left)) < 0.2 && Math.abs(last.x - (to.left - grid.left)) < 0.2,
+                "Routing link does not connect last-to-first fragments");
+            const node = bars(a.id)[1];
+            const originalCapture = [node.setPointerCapture, node.hasPointerCapture, node.releasePointerCapture];
+            node.setPointerCapture = () => {};
+            node.hasPointerCapture = () => false;
+            node.releasePointerCapture = () => {};
+            const requestsBefore = fixture.calls.filter(call => call.name === "OperationStartChangeRequested").length;
+            const x = node.getBoundingClientRect().left + 3;
+            try {
+                node.dispatchEvent(new PointerEvent("pointerdown", {pointerId: 99, isPrimary: true, button: 0, clientX: x, bubbles: true}));
+                node.dispatchEvent(new PointerEvent("pointermove", {pointerId: 99, isPrimary: true, clientX: x + 20, bubbles: true}));
+                assert(bars(a.id).every(part => part.classList.contains("cf-dragging") && part.style.transform),
+                    "Dragging one fragment did not preview the whole operation");
+                document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+                assert(bars(a.id).every(part => !part.classList.contains("cf-dragging") && !part.style.transform),
+                    "Cancel left a translated fragment");
+            } finally {
+                [node.setPointerCapture, node.hasPointerCapture, node.releasePointerCapture] = originalCapture;
+            }
+            assert(fixture.calls.filter(call => call.name === "OperationStartChangeRequested").length === requestsBefore,
+                "Cancelled fragment drag sent a request");
+            const axis = core.timeAxis(p.viewMode, core.parseCivil(p.start), core.parseCivil(p.end), undefined,
+                core.visibleDates(p.resources, core.parseCivil(p.start), core.parseCivil(p.end), p.hideNonWorkingDays, p.hideWeekends));
+            const expected = core.draggedAxisStart(axis, core.parseCivil(a.start), -30, node.closest(".cf-lane").getBoundingClientRect().width);
+            node.setPointerCapture = () => {};
+            node.hasPointerCapture = () => false;
+            node.releasePointerCapture = () => {};
+            try {
+                for (const [type, dx] of [["pointerdown", 0], ["pointermove", -30], ["pointerup", -30]]) {
+                    node.dispatchEvent(new PointerEvent(type, {pointerId: 100, isPrimary: true, button: 0, clientX: x + dx, bubbles: true}));
+                }
+                await settle();
+                const request = fixture.calls.filter(call => call.name === "OperationStartChangeRequested").at(-1);
+                assert(request && request.args[0] === a.id && request.args[2] === expected,
+                    "Dragging final fragment did not move the original operation start");
+            } finally {
+                [node.setPointerCapture, node.hasPointerCapture, node.releasePointerCapture] = originalCapture;
+            }
+            p.resources.find(resource => resource.id === a.resource).windows = [];
+            LoadSchedule(p);
+            assert(bars(a.id).length === 1 && bars(a.id)[0].classList.contains("cf-no-working-portion") &&
+                !bars(a.id)[0].classList.contains("cf-editable"), "Missing calendar silently fabricated a duration");
+            bars(a.id)[0].dispatchEvent(new PointerEvent("pointerenter", {pointerType: "mouse"}));
+            assert(document.querySelector("[role=tooltip]").textContent.includes(labels.noWorkingPortion),
+                "Missing-calendar marker lacks an explanation");
+            return {views: 4, modes: 2, weekendModes: 2, routingEndpoints: true, fragmentDrag: true, fragmentDragCancellation: true,
+                viewport: [innerWidth, innerHeight]};
+        } finally {
+            fixture.payload = original;
+            LoadSchedule(original);
+        }
+    };
+    window.fixture.assertGridLines = function () {
+        const original = structuredClone(fixture.payload);
+        const p = structuredClone(original);
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        p.start = "2026-10-28T00:00:00";
+        p.end = "2026-11-10T00:00:00";
+        p.navigation = {...p.navigation, start: p.start, viewDays: 13, offset: 0};
+        const core = CFSchedulerCore;
+        for (const resource of p.resources) {
+            resource.name += " with a long resource name to exercise different row heights";
+            resource.days = Array.from({length: 13}, (_, index) => ({
+                date: core.formatCivil(core.parseCivil(p.start) + index * core.day).slice(0, 10),
+                available: resource.direct || index % 4 === 0 ? 0 : 480,
+                allocated: index % 3 === 0 ? 600 : 120
+            }));
+        }
+        let cases = 0;
+        const aligned = () => {
+            const grid = document.querySelector(".cf-grid");
+            const overlay = grid.querySelector(".cf-grid-lines");
+            const lines = [...overlay.children];
+            const ticks = [...grid.querySelectorAll(".cf-date-ticks .cf-date")];
+            assert(lines.length === ticks.length, "Grid has a different boundary count from date headers");
+            const bounds = overlay.getBoundingClientRect();
+            const gridBounds = grid.getBoundingClientRect();
+            assert(Math.abs(bounds.height - gridBounds.height) < 0.1, "Grid lines do not span every row");
+            assert(getComputedStyle(overlay).pointerEvents === "none", "Grid lines block operation gestures");
+            for (let index = 0; index < lines.length; index++) {
+                const line = lines[index].getBoundingClientRect();
+                const tick = ticks[index].getBoundingClientRect();
+                assert(Math.abs(line.right - tick.right) < 0.1, `Boundary ${index} drifts from its header`);
+                assert(Math.abs(line.top - bounds.top) < 0.1 && Math.abs(line.bottom - bounds.bottom) < 0.1,
+                    "A vertical boundary does not run straight through all rows");
+            }
+            const days = [...grid.querySelectorAll('[data-unit="day"] .cf-date')];
+            for (const timeline of grid.querySelectorAll(".cf-timeline")) {
+                for (const [index, cell] of [...timeline.querySelectorAll(".cf-capacity-day")].entries()) {
+                    assert(Math.abs(cell.getBoundingClientRect().right - days[index].getBoundingClientRect().right) < 0.1,
+                        "Daily capacity box is offset from the header");
+                }
+            }
+            assert(!grid.style.getPropertyValue("--cf-grid-lines"), "Repeating per-lane gradient still exists");
+        };
+        try {
+            for (const view of ["hour", "day", "week", "month"]) {
+                for (const fit of [false, true]) {
+                    for (const [weekends, nonWorking] of [[false,false],[true,false],[false,true],[true,true]]) {
+                        Object.assign(p, {viewMode: view, fitToWindow: fit, hideWeekends: weekends, hideNonWorkingDays: nonWorking});
+                        fixture.payload = p;
+                        LoadSchedule(p);
+                        aligned();
+                        const board = document.querySelector(".cf-board");
+                        board.scrollLeft = board.scrollWidth / 3;
+                        aligned();
+                        document.querySelector(".cf-summary button").click();
+                        aligned();
+                        document.querySelector(".cf-summary button").click();
+                        aligned();
+                        cases++;
+                    }
+                }
+            }
+            return {cases, scrolledAndCollapsed: true, viewport: [innerWidth, innerHeight]};
+        } finally {
+            fixture.payload = original;
+            LoadSchedule(original);
+        }
+    };
+    window.fixture.assertWeekends = function () {
+        const original = structuredClone(fixture.payload);
+        const p = structuredClone(original);
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        p.start = "2026-11-06T00:00:00";
+        p.end = "2026-11-10T00:00:00";
+        p.navigation = {...p.navigation, start: p.start, viewDays: 4, offset: 0};
+        for (const resource of p.resources) {
+            resource.days = ["2026-11-06", "2026-11-07", "2026-11-08", "2026-11-09"]
+                .map((date, index) => ({date, available: resource.direct || index === 3 ? 0 : 480, allocated: index === 1 ? 60 : 0}));
+            resource.windows = [];
+        }
+        p.operations = [{...p.operations[0], start: "2026-11-07T08:00:00", end: "2026-11-07T09:00:00"}];
+        const before = JSON.stringify(p.operations);
+        try {
+            for (const view of ["hour", "day", "week", "month"]) {
+                p.viewMode = view;
+                for (const [weekends, nonWorking, count] of [[false,false,4],[true,false,2],[true,true,1],[false,true,3]]) {
+                    p.hideWeekends = weekends;
+                    p.hideNonWorkingDays = nonWorking;
+                    fixture.payload = p;
+                    LoadSchedule(p);
+                    assert(document.querySelectorAll('[data-unit="day"] .cf-date').length === count, "Weekend filters do not compose");
+                    assert(Boolean(document.querySelector('.cf-operation[data-operation="op-a"]')) === !weekends,
+                        "Scheduled weekend operation is incorrectly shown or lost after restoring weekends");
+                    assert(!document.querySelector(".cf-pending-item"), "Hidden weekend operation returned to unscheduled");
+                    if (weekends) assert(document.querySelector(".cf-nonworking-scope").textContent.includes("1 matching operations"),
+                        "Hidden weekend operation lacks notice");
+                    assert(document.querySelectorAll('[data-resource="M:100"] .cf-day-load').length === count,
+                        "Weekend capacity shading is misaligned");
+                }
+            }
+            p.start = "2026-11-07T00:00:00";
+            p.end = "2026-11-09T00:00:00";
+            p.navigation = {...p.navigation, start: p.start, viewDays: 2};
+            for (const resource of p.resources) resource.days = resource.days.slice(1, 3);
+            p.hideWeekends = true;
+            p.hideNonWorkingDays = false;
+            LoadSchedule(p);
+            assert(document.querySelector(".cf-empty-calendar") && !document.querySelector(".cf-operation"),
+                "Weekend-only window does not show the empty-calendar notice");
+            assert(JSON.stringify(p.operations) === before, "Weekend filtering modified scheduled dates");
+            return {views: 4,combinations: 4, weekendOnly: true, viewport: [innerWidth, innerHeight]};
+        } finally {
+            fixture.payload = original;
+            LoadSchedule(original);
+        }
+    };
+    window.fixture.assertCapacityFill = function () {
+        const original = structuredClone(window.fixture.payload);
+        const p = structuredClone(original);
+        for (const resource of p.resources) resource.days = resource.days.map(day => ({...day}));
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        const machine = p.resources.find(resource => resource.id === "M:100");
+        const parent = p.resources.find(resource => resource.id === "W:100");
+        const direct = p.resources.find(resource => resource.id === "D:100");
+        const before = JSON.stringify(p.operations);
+        try {
+            for (const view of ["day", "week", "month"]) {
+                p.viewMode = view;
+                for (const [available, allocated, percent, overloaded] of [
+                    [100, 0, 0, false], [100, 20, 20, false], [100, 50, 50, false], [100, 80, 80, false], [100, 100, 100, false],
+                    [100, 125, 100, true], [0, 0, 0, false], [0, 10, 100, true]
+                ]) {
+                    Object.assign(machine.days[0], {available, allocated});
+                    parent.days[0].available = 100;
+                    direct.days[0].allocated = 80;
+                    window.fixture.payload = p;
+                    LoadSchedule(p);
+                    const timeline = document.querySelector('[data-resource="M:100"]');
+                    const cell = timeline.querySelector('.cf-capacity-day');
+                    const shading = timeline.querySelector('.cf-day-load');
+                    for (const node of [cell, shading]) {
+                        assert(parseFloat(node.style.getPropertyValue("--cf-load-fill")) === percent, "Incorrect capacity fill percentage");
+                        assert(node.classList.contains("cf-loaded") === (allocated > 0), "Empty day has utilisation shading");
+                        assert(node.classList.contains("cf-overload") === overloaded, "Incorrect overload colouring");
+                        const style = getComputedStyle(node);
+                        if (node === cell) assert(style.backgroundColor === "rgba(0, 0, 0, 0)" && style.backgroundImage === "none",
+                            "Capacity numbers must not restart or obscure the continuous fill");
+                        else {
+                            assert(style.backgroundImage === "none", "Capacity meter must not tint the whole cell");
+                            const meter = node.querySelector(".cf-capacity-meter");
+                            const meterFill = getComputedStyle(meter, "::after");
+                            assert(Math.abs(parseFloat(meterFill.width) -
+                                meter.getBoundingClientRect().width * percent / 100) < 1,
+                                "Meter width does not match utilisation");
+                            if (overloaded) assert(meterFill.backgroundImage.includes("repeating-linear-gradient"),
+                                "Overloaded capacity must use red stripes");
+                            else if (allocated === available && available > 0) assert(meterFill.backgroundColor === "rgb(244, 202, 202)",
+                                "100% capacity must use solid light red");
+                            else assert(meterFill.backgroundColor === "rgb(120, 155, 145)",
+                                "Normal capacity must use muted green");
+                        }
+                    }
+                    const dayHeader = document.querySelector('[data-unit="day"] .cf-date').getBoundingClientRect();
+                    const capacityRect = cell.getBoundingClientRect();
+                    const shadeRect = shading.getBoundingClientRect();
+                    const timelineRect = timeline.getBoundingClientRect();
+                    const percentage = cell.querySelector(".cf-capacity-percent");
+                    assert(available > 0 ? percentage?.textContent === `${Math.round(allocated / available * 100)}%` : !percentage,
+                        "Top percentage must show actual utilisation, not clamp overload to 100%");
+                    if (view !== "month" && percentage) assert(Math.abs(percentage.getBoundingClientRect().top - cell.getBoundingClientRect().top - 5) < 1,
+                        "Percentage is not at the top of the cell");
+                    assert(Math.abs(shadeRect.top - timelineRect.top) < 0.1 &&
+                        Math.abs(shadeRect.bottom - timelineRect.bottom) < 0.1 &&
+                        timeline.querySelectorAll(".cf-load-background").length === 1,
+                        "Daily fill must cover the entire resource box once, without restarting at the capacity strip");
+                    assert(timeline.querySelector(".cf-load-background").parentElement === timeline,
+                        "Capacity fill is incorrectly scoped to the operation lane");
+                    for (const resourceTimeline of document.querySelectorAll(".cf-row:not(.cf-unscheduled-row) .cf-timeline")) {
+                        const resourceRect = resourceTimeline.getBoundingClientRect();
+                        const fillRect = resourceTimeline.querySelector(".cf-day-load").getBoundingClientRect();
+                        assert(Math.abs(resourceRect.top - fillRect.top) < 0.1 && Math.abs(resourceRect.bottom - fillRect.bottom) < 0.1,
+                            "Summary or direct resource fill does not cover its complete box");
+                    }
+                    assert(Math.abs(dayHeader.left - shadeRect.left) < 1 && Math.abs(capacityRect.width - shadeRect.width) < 1,
+                        "Daily fill is not aligned with capacity and date headers");
+                    for (const layer of timeline.querySelectorAll(".cf-lane, .cf-capacity")) {
+                        assert(getComputedStyle(layer).backgroundColor === "rgba(0, 0, 0, 0)",
+                            "A foreground layer creates a white gap in the capacity fill");
+                    }
+                    assert(!document.querySelector(".cf-working, .cf-no-capacity"), "Legacy non-working backgrounds remain");
+                    const directShade = document.querySelector('[data-resource="D:100"] .cf-day-load');
+                    assert(directShade.style.getPropertyValue("--cf-load-fill") === "80%" &&
+                        !directShade.classList.contains("cf-overload"), "Direct load does not use parent availability");
+                    const empty = timeline.querySelectorAll(".cf-day-load")[2];
+                    assert(!empty.classList.contains("cf-loaded") && !empty.classList.contains("cf-overload"),
+                        "Empty non-working day is shaded");
+                }
+                const label = document.querySelector('[data-resource="M:100"]').parentElement.querySelector(".cf-resource-label");
+                label.textContent = "Long resource description ".repeat(80);
+                const tallTimeline = document.querySelector('[data-resource="M:100"]');
+                const tallRect = tallTimeline.getBoundingClientRect();
+                const tallShade = tallTimeline.querySelector(".cf-day-load").getBoundingClientRect();
+                assert(Math.abs(tallRect.top - tallShade.top) < 0.1 && Math.abs(tallRect.bottom - tallShade.bottom) < 0.1,
+                    "A tall resource label creates an unfilled gap below the lane");
+            }
+            p.showSearch = true;
+            machine.days[0].available = 100;
+            machine.days[0].allocated = 80;
+            LoadSchedule(p);
+            const input = document.querySelector(".cf-search input");
+            input.value = "NO MATCH";
+            input.dispatchEvent(new Event("input"));
+            assert(document.querySelector('[data-resource="M:100"] .cf-day-load').style.getPropertyValue("--cf-load-fill") === "80%",
+                "Text search changed capacity fill");
+            input.value = "";
+            input.dispatchEvent(new Event("input"));
+            p.hideNonWorkingDays = true;
+            for (const view of ["day", "week", "month"]) {
+                p.viewMode = view;
+                LoadSchedule(p);
+                const timeline = document.querySelector('[data-resource="M:100"]');
+                const shades = timeline.querySelectorAll(".cf-day-load");
+                const cells = timeline.querySelectorAll(".cf-capacity-day");
+                assert(shades.length === 2 && cells.length === 2, "Compressed axis retained a hidden day's fill");
+                for (let index = 0; index < shades.length; index++) {
+                    assert(shades[index].dataset.date === cells[index].dataset.date &&
+                        Math.abs(shades[index].getBoundingClientRect().left - cells[index].getBoundingClientRect().left) < 1 &&
+                        Math.abs(shades[index].getBoundingClientRect().width - cells[index].getBoundingClientRect().width) < 1,
+                        "Compressed utilisation fill drifted from its day");
+                }
+            }
+            assert(JSON.stringify(p.operations) === before, "Capacity styling modified routing data");
+            return {views: 3, casesPerView: 8, compressedViews: 3, continuousFullRowFill: true, tallResourceLabel: true, directParentCapacity: true, searchIndependent: true,
+                viewport: [innerWidth, innerHeight]};
+        } finally {
+            window.fixture.payload = original;
+            LoadSchedule(original);
+        }
+    };
+    window.fixture.assertCompactDisplay = async function () {
+        const original = structuredClone(window.fixture.payload);
+        const p = structuredClone(original);
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        const visible = selector => document.querySelector(selector).getBoundingClientRect().height > 0;
+        const settle = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const load = async () => {
+            window.fixture.payload = p;
+            LoadSchedule(p);
+            await settle();
+        };
+        try {
+            p.showSearch = p.showDisplayRange = p.showStepDetails = true;
+            await load();
+            const fullHeight = document.querySelector(".cf-board").clientHeight;
+            assert(!document.querySelector(".cf-heading h1"), "Control add-in duplicates the Business Central page title");
+            assert(document.querySelector(".cf-scenario").textContent.includes(p.scenario) &&
+                document.querySelectorAll(".cf-zoom button").length === 4,
+                "Removing the duplicate title removed scenario or date-view controls");
+            assert(document.querySelector(".cf-board").getAttribute("aria-label") === p.labels.title,
+                "Scheduler region lost its accessible name");
+            const input = document.querySelector(".cf-search input");
+            input.value = "NO MATCH";
+            input.dispatchEvent(new Event("input"));
+            assert(!document.querySelector(".cf-unscheduled-row"), "A filter with no unscheduled operations uses space");
+            delete p.showSearch;
+            delete p.showDisplayRange;
+            delete p.showStepDetails;
+            await load();
+            assert(!visible(".cf-search") && !visible(".cf-navigation") && !visible(".cf-details"),
+                "Optional panels are not hidden by default");
+            assert(visible(".cf-unscheduled-row") &&
+                document.querySelectorAll(".cf-operation").length === 3,
+                "Unscheduled steps are not displayed under their work centre");
+            assert(!document.querySelector(".cf-legend") && !document.body.innerText.includes(p.scope) &&
+                !document.body.innerText.includes(p.timeZone) && !visible(".cf-drop-help"),
+                "Static instructions still occupy the main window");
+            assert(document.querySelector(".cf-routing-scope").classList.contains("cf-visually-hidden"),
+                "Routing summary still occupies layout space");
+            const compactHeight = document.querySelector(".cf-board").clientHeight;
+            if (innerHeight >= 600) assert(compactHeight > fullHeight + 100, "Compact mode did not reclaim timeline height");
+            for (const showSearch of [false, true]) {
+                for (const showDisplayRange of [false, true]) {
+                    for (const showStepDetails of [false, true]) {
+                        Object.assign(p, {showSearch, showDisplayRange, showStepDetails});
+                        await load();
+                        assert(visible(".cf-search") === showSearch && visible(".cf-navigation") === showDisplayRange &&
+                            visible(".cf-details") === showStepDetails, "Display switches are not independent");
+                    }
+                }
+            }
+            p.showSearch = p.showDisplayRange = p.showStepDetails = false;
+            p.operations = p.operations.filter(item => item.confirmed || item.finished);
+            await load();
+            if (p.scenario) {
+                SelectOperations("clear");
+                assert(!visible(".cf-selection"), "Selection toolbar uses compact space without a selection or status");
+            }
+            assert(!document.querySelector(".cf-unscheduled-row"), "Empty unscheduled rows are not hidden");
+            p.operations.push({...original.operations.find(item => item.id === "op-p")});
+            p.hideUnscheduled = true;
+            await load();
+            assert(!document.querySelector(".cf-unscheduled-row"), "Hide Unscheduled did not remove the category row");
+            p.hideUnscheduled = false;
+            await load();
+            assert(document.querySelector(".cf-unscheduled-row"), "Show Unscheduled did not restore the category row");
+            p.operations = p.operations.filter(item => item.confirmed || item.finished);
+            await load();
+            assert(document.querySelector(".cf-board").clientHeight >= innerHeight * 0.70,
+                "Empty compact view does not fill at least 70% of the window");
+            const bar = document.querySelector('.cf-operation[data-operation="op-a"]');
+            bar.dispatchEvent(new MouseEvent("contextmenu", {bubbles: true, cancelable: true, clientX: 20, clientY: 20}));
+            assert(document.querySelectorAll(".cf-context-menu button").length === 7 && !visible(".cf-details"),
+                "Context actions require the optional bottom details panel");
+            for (let attempt = 0; document.getElementById("controlAddIn").getAttribute("aria-busy") === "true"; attempt++) {
+                if (attempt === 100) throw new Error("Context selection bridge did not settle");
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            p.warnings = ["Capacity test warning"];
+            await load();
+            assert(visible(".cf-banner") && document.querySelector(".cf-banner").textContent.includes(p.warnings[0]),
+                "Compact display hid a warning");
+            ShowError("Scheduling test error");
+            assert(visible(".cf-banner") && document.querySelector(".cf-banner").textContent === "Scheduling test error",
+                "Compact display hid an error");
+            return {defaultsHidden: true, combinations: 8, emptyUnscheduledHidden: true,
+                fullHeight, compactHeight, viewport: [innerWidth, innerHeight]};
+        } finally {
+            window.fixture.payload = original;
+            LoadSchedule(original);
+        }
+    };
+    window.fixture.assertMoveViewport = async function () {
+        const original = structuredClone(fixture.payload);
+        const p = structuredClone(original);
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        const settle = async () => {
+            for (let attempt = 0; document.getElementById("controlAddIn").getAttribute("aria-busy") === "true"; attempt++) {
+                if (attempt === 100) throw new Error("Viewport move bridge did not settle");
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+        };
+        try {
+            Object.assign(p, {viewMode: "hour", fitToWindow: false, showSearch: false,
+                showDisplayRange: false, showStepDetails: false});
+            const machine = p.resources.find(resource => resource.id === "M:100");
+            p.resources.splice(2, 0, ...Array.from({length: 24}, (_, index) =>
+                ({...structuredClone(machine), id: `M:extra-${index}`, name: `Additional machine ${index}`})));
+            p.operations[0].start = "2026-11-04T10:00:00";
+            p.operations[0].end = "2026-11-04T12:00:00";
+            fixture.payload = p;
+            LoadSchedule(p);
+            let board = document.querySelector(".cf-board");
+            let node = document.querySelector('.cf-operation[data-operation="op-a"]');
+            node.click();
+            await settle();
+            board = document.querySelector(".cf-board");
+            node = document.querySelector('.cf-operation[data-operation="op-a"]');
+            const boardRect = board.getBoundingClientRect();
+            const barRect = node.getBoundingClientRect();
+            board.scrollLeft = barRect.left - boardRect.left - 280;
+            board.scrollTop = barRect.top - boardRect.top - 180;
+            const before = {left: board.scrollLeft, top: board.scrollTop};
+            assert(before.left > 0 && before.top > 0, "Viewport regression requires scrolling in both directions");
+            node.focus({preventScroll: true});
+            node.setPointerCapture = () => {};
+            node.hasPointerCapture = () => false;
+            node.releasePointerCapture = () => {};
+            const origin = node.getBoundingClientRect().left + 5;
+            const version = p.operations[0].version;
+            for (const [type, delta] of [["pointerdown", 0], ["pointermove", 30], ["pointerup", 30]]) {
+                node.dispatchEvent(new PointerEvent(type, {pointerId: 71, isPrimary: true, button: 0,
+                    clientX: origin + delta, bubbles: true, cancelable: true}));
+            }
+            await settle();
+            board = document.querySelector(".cf-board");
+            node = document.querySelector('.cf-operation[data-operation="op-a"]');
+            assert(p.operations[0].version !== version, "Viewport regression did not actually move the operation");
+            assert(Math.abs(board.scrollLeft - before.left) < 1 && Math.abs(board.scrollTop - before.top) < 1,
+                "Accepted move reset the horizontal or vertical viewport");
+            assert(node.classList.contains("cf-selected") && document.activeElement === node,
+                "Accepted move lost the selected operation or keyboard focus");
+            assert(node.getBoundingClientRect().left >= board.getBoundingClientRect().left + 240 &&
+                node.getBoundingClientRect().right <= board.getBoundingClientRect().right,
+                "Moved operation is no longer visible");
+            board.focus({preventScroll: true});
+            LoadSchedule(structuredClone(p));
+            assert(document.activeElement === document.querySelector(".cf-board") &&
+                Math.abs(document.querySelector(".cf-board").scrollLeft - before.left) < 1,
+                "Ordinary refresh lost board focus or scroll position");
+            p.viewMode = "day";
+            LoadSchedule(p);
+            assert(document.querySelector(".cf-board").scrollLeft === 0, "Changing the time scale incorrectly retained old pixel scroll");
+            return {acceptedMove: true, horizontalAndVerticalScroll: true, selectionAndFocus: true,
+                refresh: true, viewChangeReset: true, viewport: [innerWidth, innerHeight]};
+        } finally {
+            fixture.payload = original;
+            LoadSchedule(original);
+        }
+    };
     window.fixture.assertPlacementAndDrag = async function () {
         const original = structuredClone(window.fixture.payload);
         const p = structuredClone(original);
@@ -87,6 +798,7 @@
         const bar = id => document.querySelector(`.cf-operation[data-operation="${id}"]`);
         const pending = id => document.querySelector(`.cf-pending-item[data-operation="${id}"]`);
         const requests = () => window.fixture.calls.filter(call => call.name === "OperationStartChangeRequested");
+        const core = CFSchedulerCore;
         const settle = async () => {
             for (let attempt = 0; document.getElementById("controlAddIn").getAttribute("aria-busy") === "true"; attempt++) {
                 if (attempt === 100) throw new Error("Drag bridge did not settle");
@@ -120,7 +832,16 @@
                     p.documentFocus = focus;
                     LoadSchedule(p);
                     assert(pending("op-p") && !bar("op-p"), "Existing dates must not place an unscheduled step");
+                    assert(pending("op-p").closest(".cf-unscheduled-row") &&
+                        pending("op-p").closest(".cf-unscheduled-row").previousElementSibling.querySelector(".cf-resource-name").textContent ===
+                            p.resources[0].name,
+                        "Unscheduled work is not grouped beneath its work-centre category");
                     assert(bar("op-a") && !pending("op-a"), "Scheduled step must appear only on the timeline");
+                    const axis = CFSchedulerCore.timeAxis(view, CFSchedulerCore.parseCivil(p.start),
+                        CFSchedulerCore.parseCivil(p.end));
+                    assert(Math.abs(parseFloat(pending("op-p").style.width) -
+                        p.operations.find(item => item.id === "op-p").workMinutes * CFSchedulerCore.minute / axis.duration * 100) < 0.00001,
+                        "Unscheduled operation width does not represent its work duration");
                     disjoint();
                 }
             }
@@ -128,10 +849,29 @@
             p.viewMode = "hour";
             p.documentFocus = false;
             LoadSchedule(p);
+            const hourAxis = core.timeAxis("hour", core.parseCivil(p.start), core.parseCivil(p.end));
+            const machineRow = document.querySelector('[data-resource="M:100"]');
+            const shades = [...machineRow.querySelectorAll(".cf-nonworking-interval")];
+            assert(shades.length === 5, "Hour view did not shade calendar gaps and the non-working day");
+            const expectedShades = core.nonWorkingSegments(hourAxis, p.resources.find(resource => resource.id === "M:100").windows);
+            assert(shades.every((shade, index) =>
+                Math.abs(parseFloat(shade.style.left) - expectedShades[index].left) < 0.0001 &&
+                Math.abs(parseFloat(shade.style.width) - expectedShades[index].width) < 0.0001),
+                "Per-resource non-working shading does not match calendar windows");
+            const headerColor = getComputedStyle(document.querySelector('.cf-date-columns[data-unit="hour"]')).backgroundColor;
+            assert(shades.every(shade => getComputedStyle(shade).backgroundColor === headerColor),
+                "Non-working shading does not match the Hour header color");
+            const machine = p.resources.find(resource => resource.id === "M:100");
+            machine.missingCalendar = true;
+            LoadSchedule(p);
+            assert(!document.querySelector('[data-resource="M:100"] .cf-nonworking-interval'),
+                "A missing calendar was incorrectly rendered as non-working time");
+            delete machine.missingCalendar;
+            LoadSchedule(p);
+            await settle();
             let lane = document.querySelector('[data-resource="M:100"] .cf-lane');
             let rect = lane.getBoundingClientRect();
-            const core = CFSchedulerCore;
-            const axis = core.timeAxis("hour", core.parseCivil(p.start), core.parseCivil(p.end), p.hourWindows);
+            const axis = core.timeAxis("hour", core.parseCivil(p.start), core.parseCivil(p.end));
             const x = rect.left + core.axisPosition(axis, core.parseCivil("2026-11-03T09:30:00")) / axis.duration * rect.width;
             const transfer = new DataTransfer();
             pending("op-p").dispatchEvent(new DragEvent("dragstart", {dataTransfer: transfer, bubbles: true, cancelable: true}));
@@ -206,7 +946,7 @@
                 await new Promise(resolve => setTimeout(resolve, 10));
             }
         };
-        const commands = ["details", "edit", "zoom", "reset", "commit", "order"];
+        const commands = ["details", "edit", "zoom", "reset", "commit", "order", "bcRouting", "lock"];
         const bar = () => document.querySelector('.cf-operation[data-operation="op-a"]');
         const open = async (owner, key) => {
             owner.dispatchEvent(key
@@ -225,14 +965,14 @@
             await settle();
             let menu = await open(bar());
             assert(JSON.stringify([...menu.querySelectorAll("button")].map(node => node.dataset.command)) === JSON.stringify(commands),
-                "The menu must contain exactly the six approved actions");
+                "The menu must contain exactly the six approved actions plus the position lock");
             const rect = menu.getBoundingClientRect();
             assert(rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth + 1 && rect.bottom <= innerHeight + 1,
                 "Context menu escaped the viewport");
             assert(bar().classList.contains("cf-selected"), "Right click must highlight the selected step");
             menu.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
             assert(!document.querySelector(".cf-context-menu") && document.activeElement === bar(), "Escape must restore focus");
-            for (const command of commands) {
+            for (const command of commands.filter(value => value !== "lock")) {
                 menu = await open(bar());
                 const control = menu.querySelector(`[data-command="${command}"]`);
                 assert(!control.disabled, `Allowed action ${command} is disabled`);
@@ -246,7 +986,7 @@
             const pending = document.querySelector('.cf-pending-item[data-operation="op-p"]');
             menu = await open(pending, "F10");
             menu.dispatchEvent(new KeyboardEvent("keydown", {key: "End", bubbles: true, cancelable: true}));
-            assert(document.activeElement.dataset.command === "order", "End must focus the last menu action");
+            assert(document.activeElement.dataset.command === "lock", "End must focus the last menu action");
             menu.dispatchEvent(new KeyboardEvent("keydown", {key: "ArrowDown", bubbles: true, cancelable: true}));
             assert(document.activeElement.dataset.command === "details", "ArrowDown must wrap");
             menu.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
@@ -262,10 +1002,10 @@
             p.operations[0].canCommit = false;
             LoadSchedule(p);
             menu = await open(bar());
-            for (const command of ["edit", "reset", "commit"]) {
+            for (const command of ["edit", "reset", "commit", "lock"]) {
                 assert(menu.querySelector(`[data-command="${command}"]`).disabled, `${command} ignores permissions`);
             }
-            for (const command of ["details", "zoom", "order"]) {
+            for (const command of ["details", "zoom", "order", "bcRouting"]) {
                 assert(!menu.querySelector(`[data-command="${command}"]`).disabled, `${command} must remain available`);
             }
             window.dispatchEvent(new Event("resize"));
@@ -387,10 +1127,12 @@
             for (const view of ["hour", "day", "week", "month"]) {
                 p.viewMode = view;
                 LoadSchedule(p);
-                const axis = core.timeAxis(view, core.parseCivil(p.start), core.parseCivil(p.end), p.hourWindows);
+                const axis = core.timeAxis(view, core.parseCivil(p.start), core.parseCivil(p.end));
                 const header = document.querySelector(".cf-axis").getBoundingClientRect();
                 const expected = header.left + core.currentTimePosition(axis, p.currentTime) / 100 * header.width;
                 const markers = [...document.querySelectorAll(".cf-current-time")];
+                assert(markers.every(marker => getComputedStyle(marker).borderLeftColor === "rgb(179, 157, 219)"),
+                    "Current-time line must be light purple");
                 assert(markers.length === 2, "Current-time line must cover both sticky header and resource grid");
                 assert(markers.every(marker => near(marker.getBoundingClientRect().left, expected)), "Current-time marker is misaligned");
                 const grid = document.querySelector(".cf-grid").getBoundingClientRect();
@@ -409,7 +1151,12 @@
             p.viewMode = "hour";
             p.currentTime = "2026-11-03T06:00:00";
             LoadSchedule(p);
-            assert(!document.querySelector(".cf-current-time"), "Off-hours time was snapped into the Hour window");
+            const hourAxis = core.timeAxis("hour", core.parseCivil(p.start), core.parseCivil(p.end));
+            const hourHeader = document.querySelector(".cf-axis").getBoundingClientRect();
+            const hourPosition = hourHeader.left + core.currentTimePosition(hourAxis, p.currentTime) / 100 * hourHeader.width;
+            assert(document.querySelector(".cf-current-time") &&
+                near(document.querySelector(".cf-current-time").getBoundingClientRect().left, hourPosition),
+                "A non-working hour must remain visible on the full-day Hour axis");
             p.viewMode = "day";
             p.hideNonWorkingDays = true;
             p.currentTime = "2026-11-05T10:00:00";
@@ -467,7 +1214,7 @@
                     core.formatCivil(core.parseCivil(p.start) + index * core.day).slice(0, 10));
                 for (const resource of p.resources) {
                     resource.days = dates.map(date => ({ date, available: resource.direct ? 0 : 480, allocated: 600 }));
-                    resource.windows = dates.map(date => ({ start: date + "T08:00:00", end: date + "T16:00:00" }));
+                    resource.windows = dates.map(date => ({ start: date + "T08:00:00", end: date + "T16:00:00", minutes: 480 }));
                 }
                 p.operations[2].start = dates.at(-1) + "T08:00:00";
                 p.operations[2].end = dates.at(-1) + "T12:00:00";
@@ -523,7 +1270,7 @@
                 allocated: index === 1 ? 120 : 0
             }));
             resource.windows = resource.days.filter(day => day.available > 0)
-                .map(day => ({ start: day.date + "T08:00:00", end: day.date + "T09:00:00" }));
+                .map(day => ({ start: day.date + "T08:00:00", end: day.date + "T09:00:00", minutes: day.available }));
         }
         Object.assign(p.operations[0], { start: "2026-11-06T08:00:00", end: "2026-11-06T10:00:00",
             successors: ["op-b", "op-c"], orderScheduled: true });
@@ -595,7 +1342,7 @@
                 LoadSchedule(p);
                 assert(document.querySelector(".cf-empty-calendar")?.textContent === labels.noWorkingDays &&
                     !document.querySelector(".cf-grid") && !document.querySelector(".cf-banner.cf-error") &&
-                    document.querySelector(".cf-pending-item") && document.querySelector(".cf-routing-scope").hidden,
+                    !document.querySelector(".cf-pending-item") && document.querySelector(".cf-routing-scope").hidden,
                     "All-closed range did not render a usable explicit empty state");
                 assert(document.querySelector(".cf-board").getBoundingClientRect().height >= 219, "Empty calendar collapsed the board");
             }
@@ -701,7 +1448,7 @@
             assert(window.fixture.calls.length === beforeWrong && !document.querySelector(".cf-banner").hidden, "Wrong resource sent a request or lacked warning");
             const lane = document.querySelector('[data-resource="M:100"] .cf-lane');
             const rect = lane.getBoundingClientRect();
-            const axis = CFSchedulerCore.timeAxis("hour", CFSchedulerCore.parseCivil(p.start), CFSchedulerCore.parseCivil(p.end), p.hourWindows);
+            const axis = CFSchedulerCore.timeAxis("hour", CFSchedulerCore.parseCivil(p.start), CFSchedulerCore.parseCivil(p.end));
             const x = rect.left + CFSchedulerCore.axisPosition(axis, CFSchedulerCore.parseCivil("2026-11-03T09:30:00")) / axis.duration * rect.width;
             drag = startDrag();
             dragEvent("dragover", lane, drag.dataTransfer, x);
@@ -749,8 +1496,12 @@
         const pause = () => new Promise(resolve => setTimeout(resolve, 200));
         function contained() {
             const rect = tip().getBoundingClientRect();
+            const owner = document.querySelector(`[aria-describedby="${tip().id}"]`);
+            const anchor = owner.getBoundingClientRect();
             assert(rect.left >= 7 && rect.top >= 7 && rect.right <= innerWidth - 7 && rect.bottom <= innerHeight - 7,
                 "Tooltip escaped the iframe viewport");
+            assert(rect.bottom <= anchor.top - 7 || rect.top >= anchor.bottom + 7,
+                "Tooltip covers its operation instead of staying above or below");
             assert(tip().scrollWidth <= tip().clientWidth + 1, "Tooltip text overflowed horizontally");
         }
         try {
@@ -805,6 +1556,24 @@
             assert(tip().querySelectorAll("h4").length === 2 && tip().textContent.includes("ITEM-200"), "Shared routing lost a production line");
             assert(tip().textContent.includes(labels.hourClippedStart), "Clipped-start guidance missing");
             contained();
+            const node = bar();
+            const originalStyle = node.style.cssText;
+            try {
+                for (const top of [12, Math.floor(innerHeight / 2), innerHeight - 45]) {
+                    node.style.position = "fixed";
+                    node.style.left = "250px";
+                    node.style.top = `${top}px`;
+                    node.style.width = "80px";
+                    node.style.zIndex = "90";
+                    enter(node);
+                    contained();
+                    const anchor = node.getBoundingClientRect();
+                    const target = document.elementFromPoint(anchor.left + anchor.width / 2, anchor.top + anchor.height / 2);
+                    assert(target === node || node.contains(target), "Hover box intercepts operation selection");
+                }
+            } finally {
+                node.style.cssText = originalStyle;
+            }
             const pending = document.querySelector(".cf-pending-item");
             pending.dispatchEvent(new PointerEvent("pointerdown", { pointerType: "touch" }));
             assert(tip().hidden, "Pointer down did not dismiss");
@@ -832,6 +1601,12 @@
         near(root.getBoundingClientRect().width, window.innerWidth, "Root fills iframe width");
         near(grid.getBoundingClientRect().width, Math.max(board.clientWidth, label.width + minimum), "Timeline fits or scrolls");
         for (const row of root.querySelectorAll(".cf-date-columns")) {
+            const colours = {month: "rgb(220, 231, 244)", week: "rgb(236, 242, 249)",
+                day: "rgb(248, 250, 253)", hour: "rgb(248, 250, 253)"};
+            const style = getComputedStyle(row);
+            if (style.backgroundColor !== colours[row.dataset.unit] || style.color !== "rgb(38, 62, 89)") {
+                throw new Error("Date headers do not use the Calm Blue hierarchy.");
+            }
             near(row.getBoundingClientRect().width, axis.width, "Header fills timeline");
             near(row.lastElementChild.getBoundingClientRect().right, axis.right, "Last date aligns", 0.1);
         }
@@ -847,7 +1622,9 @@
         if (board.getBoundingClientRect().height < 219) throw new Error("Timeline is unusably short.");
         if (root.scrollWidth > root.clientWidth + 1) throw new Error("Horizontal scrolling escaped the board.");
         if (root.scrollHeight <= root.clientHeight + 1) {
-            near(root.querySelector(".cf-details").getBoundingClientRect().bottom, window.innerHeight - 8, "No unused space below details");
+            const lastPanel = [".cf-details", ".cf-navigation", ".cf-board"]
+                .map(selector => root.querySelector(selector)).find(node => !node.hidden);
+            near(lastPanel.getBoundingClientRect().bottom, window.innerHeight - 8, "No unused space below visible content");
         }
         return {
             viewport: [window.innerWidth, window.innerHeight],
@@ -855,6 +1632,205 @@
             horizontalScroll: board.scrollWidth > board.clientWidth + 1,
             verticalFallback: root.scrollHeight > root.clientHeight + 1
         };
+    };
+    window.fixture.assertSelectionLocks = async function () {
+        const original = structuredClone(window.fixture.payload);
+        const baseline = JSON.stringify(window.fixture.bcOperations);
+        const p = structuredClone(original);
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        const root = document.getElementById("controlAddIn");
+        const settle = async () => {
+            await new Promise(resolve => setTimeout(resolve, 0));
+            for (let attempt = 0; root.getAttribute("aria-busy") === "true"; attempt++) {
+                if (attempt === 100) throw new Error("Selection bridge did not settle");
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+        };
+        const node = id => document.querySelector(`[data-operation="${id}"]`);
+        const click = (id, ctrlKey = false) => node(id).dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true, ctrlKey}));
+        const selected = () => [...document.querySelectorAll(".cf-multi-selected")].map(entry => entry.dataset.operation).sort();
+        const count = () => document.querySelector(".cf-selection-count").textContent;
+        const toolbarButton = command => document.querySelector(`.cf-selection [data-selection="${command}"]`);
+        const lockCalls = () => window.fixture.calls.filter(call => call.name === "OperationsLockRequested");
+        const status = () => document.querySelector(".cf-draft-status");
+        const storageKey = "cf-production-scheduler:view:TEST-COMPANY:user:BASE";
+        try {
+            sessionStorage.removeItem(storageKey);
+            const opA = p.operations.find(item => item.id === "op-a");
+            const opP = p.operations.find(item => item.id === "op-p");
+            opA.routingNo = opP.routingNo = "ROUTE-100";
+            opA.successors = ["op-p"];
+            opP.predecessors = ["op-a"];
+            p.operations.push(
+                {...structuredClone(opA), id: "op-r", operation: "50", routingReference: 20000, successors: [], predecessors: [],
+                    start: "2026-11-04T08:00:00", end: "2026-11-04T09:00:00"},
+                {...structuredClone(opA), id: "op-s", operation: "60", statusId: 2, status: "Firm Planned", successors: [], predecessors: [],
+                    start: "2026-11-04T10:00:00", end: "2026-11-04T11:00:00"});
+            window.fixture.payload = p;
+            LoadSchedule(p);
+            await settle();
+            SelectOperations("clear");
+            SetDraftStatus("", "");
+            assert(document.querySelector(".cf-selection").hidden, "The compact toolbar stays hidden without a selection or status");
+            SelectOperations("chain");
+            assert(root.querySelector(".cf-banner").textContent === p.labels.noSelection, "Chain without a selection is reported");
+            click("op-a");
+            await settle();
+            assert(!document.querySelector(".cf-selection").hidden, "Draft scenarios must show the selection toolbar");
+            SelectOperations("clear");
+            assert(document.querySelector(".cf-selection").getAttribute("role") === "toolbar", "Selection controls need a toolbar role");
+            assert(count() === "0 selected" && toolbarButton("chain").disabled, "Selection actions need a selection");
+            assert(document.querySelector(".cf-lock-selected").disabled, "Lock needs a selection");
+            click("op-a");
+            await settle();
+            assert(count() === "1 selected" && node("op-a").classList.contains("cf-selected"), "Plain click selects one step");
+            click("op-b", true);
+            await settle();
+            assert(JSON.stringify(selected()) === JSON.stringify(["op-a", "op-b"]), "Ctrl+click must add to the selection");
+            assert(node("op-b").classList.contains("cf-selected") && !node("op-a").classList.contains("cf-selected"),
+                "The last Ctrl+clicked step is the active details step");
+            assert(document.querySelector(".cf-details h3").textContent.startsWith("101002"), "Details follow the active step");
+            assert(node("op-a").getAttribute("aria-pressed") === "true", "Selected set members expose aria-pressed");
+            click("op-b", true);
+            await settle();
+            assert(JSON.stringify(selected()) === JSON.stringify(["op-a"]) && node("op-a").classList.contains("cf-selected"),
+                "Ctrl+click toggles off and returns focus to the remaining step");
+            SelectOperations("chain");
+            assert(JSON.stringify(selected()) === JSON.stringify(["op-a", "op-p"]),
+                "Routing chain uses status, order, routing reference and routing number");
+            SelectOperations("clear");
+            assert(count() === "0 selected" && !document.querySelector(".cf-multi-selected, .cf-selected"), "Clear selection");
+            click("op-p");
+            await settle();
+            SelectOperations("following");
+            assert(JSON.stringify(selected()) === JSON.stringify(["op-p"]), "Following steps of the last step is only itself");
+            click("op-a");
+            await settle();
+            toolbarButton("following").click();
+            assert(JSON.stringify(selected()) === JSON.stringify(["op-a", "op-p"]), "Following steps follow successors");
+            SelectOperations("bogus");
+            assert(!root.querySelector(".cf-banner").classList.contains("cf-error") &&
+                root.querySelector(".cf-banner").textContent === p.labels.invalidSelectionCommand, "Unknown commands are reported");
+            const lock = document.querySelector(".cf-lock-selected");
+            assert(!lock.disabled && document.querySelector(".cf-unlock-selected").disabled, "Lock enabled only for unlocked steps");
+            const versions = [opA.version, opP.version];
+            lock.click();
+            assert(status().textContent === p.labels.saving && !status().hidden, "Mutation must show Saving");
+            await settle();
+            const call = lockCalls().at(-1);
+            assert(JSON.stringify(call.args) === JSON.stringify([JSON.stringify([{id: "op-a", version: versions[0]}, {id: "op-p", version: versions[1]}]), true]),
+                "Lock request sends versioned operations");
+            assert(status().textContent === p.labels.saved, "Reloaded payload confirms the save");
+            assert(JSON.stringify(selected()) === JSON.stringify(["op-a", "op-p"]), "Selection survives the reload");
+            const locked = node("op-a");
+            const icon = locked.querySelector(".cf-lock-icon");
+            assert(icon && getComputedStyle(icon).pointerEvents === "none" && icon.getAttribute("aria-hidden") === "true",
+                "Lock icon must be decorative and not intercept clicks");
+            const iconRect = icon.getBoundingClientRect();
+            const hit = document.elementFromPoint(iconRect.left + iconRect.width / 2, iconRect.top + iconRect.height / 2);
+            assert(!hit || hit === locked || !locked.contains(hit), "Lock icon must not steal bar clicks");
+            assert(locked.getAttribute("aria-label").includes(p.labels.positionLocked), "Locked state must be announced");
+            assert(!locked.classList.contains("cf-editable") && node("op-p").draggable === false, "Locked steps are not draggable");
+            const before = window.fixture.calls.filter(entry => entry.name === "OperationStartChangeRequested").length;
+            const rect = locked.getBoundingClientRect();
+            locked.dispatchEvent(new PointerEvent("pointerdown", {bubbles: true, button: 0, isPrimary: true, pointerId: 31, clientX: rect.left + 5}));
+            locked.dispatchEvent(new PointerEvent("pointermove", {bubbles: true, pointerId: 31, clientX: rect.left + 80}));
+            locked.dispatchEvent(new PointerEvent("pointerup", {bubbles: true, pointerId: 31, clientX: rect.left + 80}));
+            await settle();
+            assert(window.fixture.calls.filter(entry => entry.name === "OperationStartChangeRequested").length === before, "Locked drag must not save");
+            click("op-a");
+            await settle();
+            assert([...document.querySelectorAll(".cf-details [data-mutation]")].find(entry => entry.textContent === p.labels.schedule).disabled,
+                "Manual start editing is disabled for locked steps");
+            locked.dispatchEvent(new MouseEvent("contextmenu", {clientX: 20, clientY: 20, bubbles: true, cancelable: true}));
+            await settle();
+            const menu = document.querySelector(".cf-context-menu");
+            assert(menu.querySelector('[data-command="edit"]').disabled, "Context edit is disabled for locked steps");
+            const unlock = menu.querySelector('[data-command="unlock"]');
+            assert(unlock && !unlock.disabled && unlock.textContent === p.labels.unlockStep, "Context unlock must be available");
+            unlock.click();
+            await settle();
+            assert(JSON.stringify(lockCalls().at(-1).args) === JSON.stringify([JSON.stringify([{id: "op-a", version: String(Number(versions[0]) + 1)}]), false]),
+                "Context unlock sends only the clicked step");
+            assert(!node("op-a").querySelector(".cf-lock-icon") && node("op-p").querySelector(".cf-lock-icon"), "Unlock updates only the requested step");
+            SelectOperations("chain");
+            assert(!document.querySelector(".cf-lock-selected").disabled && !document.querySelector(".cf-unlock-selected").disabled,
+                "Mixed selections can lock the unlocked and unlock the locked steps");
+            const viewer = structuredClone(p);
+            for (const item of viewer.operations) Object.assign(item, {canLock: false, canUnlock: false});
+            LoadSchedule(viewer);
+            assert(document.querySelector(".cf-lock-selected").disabled && document.querySelector(".cf-unlock-selected").disabled,
+                "Capabilities from canLock/canUnlock disable toolbar mutations for viewers");
+            LoadSchedule(p);
+            click("op-p");
+            await settle();
+            LockSelectedOperations(true);
+            assert(root.querySelector(".cf-banner").textContent === p.labels.noLockChange && !status().textContent.includes(p.labels.saving),
+                "Requests without a lock change are reported and not sent");
+            click("op-a");
+            await settle();
+            window.fixture.failNext = true;
+            LockSelectedOperations(true);
+            await settle();
+            assert(status().classList.contains("cf-error") && status().textContent === p.labels.saveFailed, "Failed saves never show Saved");
+            LoadSchedule(p);
+            await settle();
+            assert(status().textContent === p.labels.saveFailed, "A later unrelated payload must not claim success");
+            SetDraftStatus("saving", "");
+            ShowError("Draft conflict");
+            assert(status().textContent === p.labels.saveFailed, "ShowError while saving reports a failed save");
+            LoadSchedule(p);
+            SetDraftStatus("saved", "Replan saved: 3 orders");
+            assert(status().textContent === "Replan saved: 3 orders" && !status().classList.contains("cf-error"), "Parent status messages display");
+            SetDraftStatus("error", "Partially saved: 1 of 2 orders");
+            assert(status().classList.contains("cf-error") && status().textContent.startsWith("Partially"), "Parent error state displays");
+            SetDraftStatus("", "");
+            assert(status().hidden, "Empty state clears the status");
+            click("op-a");
+            await settle();
+            SelectOperations("chain");
+            assert(count() === "2 selected", "Chain selection before stale reload");
+            const stale = structuredClone(p);
+            stale.operations = stale.operations.filter(item => item.id !== "op-p");
+            LoadSchedule(stale);
+            assert(count() === "1 selected", "Stale selected IDs are removed on payload load");
+            LoadSchedule(p);
+            click("op-a");
+            click("op-r", true);
+            await settle();
+            const viewPayload = {...structuredClone(p), viewStateKey: "TEST-COMPANY:user:BASE"};
+            window.fixture.payload = viewPayload;
+            LoadSchedule(viewPayload);
+            await new Promise(resolve => setTimeout(resolve, 300));
+            const saved = JSON.parse(sessionStorage.getItem(storageKey));
+            assert(saved && JSON.stringify(saved.selectedIds) === JSON.stringify(["op-a", "op-r"]) && saved.start === viewPayload.start,
+                "View state is stored per key and display window");
+            assert(!document.body.textContent.includes("TEST-COMPANY"), "The view-state key is never rendered");
+            SelectOperations("clear");
+            await new Promise(resolve => setTimeout(resolve, 300));
+            sessionStorage.setItem(storageKey, JSON.stringify({...saved, selectedIds: ["op-r", "missing"], selectedId: "op-r"}));
+            window.CFProductionScheduler.initialise();
+            await settle();
+            assert(JSON.stringify(selected()) === JSON.stringify(["op-r"]) && node("op-r").classList.contains("cf-selected"),
+                "Reopen restores the remembered selection and drops unknown IDs");
+            sessionStorage.setItem(storageKey, JSON.stringify({...saved, start: "2026-12-01T00:00:00"}));
+            SelectOperations("clear");
+            window.CFProductionScheduler.initialise();
+            await settle();
+            assert(count() === "0 selected", "A different display window must not restore view state");
+            const other = {...structuredClone(p), scenario: "OTHER", viewStateKey: "TEST-COMPANY:user:OTHER"};
+            click("op-a");
+            LoadSchedule(other);
+            assert(count() === "0 selected", "Scenario switching clears the selected set");
+            assert(JSON.stringify(window.fixture.bcOperations) === baseline, "Locks must not mutate the BC baseline");
+            return {selection: true, chain: true, following: true, locks: true, status: true, viewState: true};
+        } finally {
+            sessionStorage.removeItem(storageKey);
+            sessionStorage.removeItem("cf-production-scheduler:view:TEST-COMPANY:user:OTHER");
+            window.fixture.failNext = false;
+            window.fixture.payload = original;
+            LoadSchedule(original);
+        }
     };
     window.Microsoft = { Dynamics: { NAV: {
         InvokeExtensibilityMethod(name, args, skipIfBusy, success, failure) {
@@ -888,6 +1864,15 @@
                                 ? { date, available: 0, allocated: date === "2026-11-03" ? 120 : 0 }
                                 : original || { date, available: 0, allocated: 0 };
                         });
+                    }
+                    window.LoadSchedule(payload);
+                }
+                if (name === "OperationsLockRequested") {
+                    for (const request of JSON.parse(args[0])) {
+                        const item = payload.operations.find(entry => entry.id === request.id);
+                        if (item.version !== request.version) throw new Error("Stale lock version");
+                        item.positionLocked = args[1];
+                        item.version = String(Number(item.version) + 1);
                     }
                     window.LoadSchedule(payload);
                 }

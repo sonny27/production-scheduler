@@ -45,6 +45,7 @@ permissionset 91300 CF_SchedulerView
         page CF_SaveSchedulerDatePreset = X,
         page CF_SchedulerSpecificDate = X,
         codeunit CF_SchedulerDateMgt = X,
+        codeunit CF_SchedulerSessionState = X,
         codeunit CF_ProductionSchedulerMgt = X,
         codeunit CF_ScheduleDraftMgt = X,
         codeunit CF_SchedulerCapacity = X;

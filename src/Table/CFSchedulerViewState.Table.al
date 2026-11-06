@@ -28,6 +28,11 @@ table 91306 CF_SchedulerViewState
         field(19; SelectedOperationId; Text[50]) { Caption = 'Selected Operation ID'; }
         field(20; FocusNotice; Text[2048]) { Caption = 'Focus Notice'; }
         field(21; IncludeProblemSteps; Boolean) { Caption = 'Include Problem Steps'; }
+        field(22; HideWeekends; Boolean) { Caption = 'Hide Weekends'; }
+        field(23; ShowSearch; Boolean) { Caption = 'Show Search'; }
+        field(24; ShowDisplayRange; Boolean) { Caption = 'Show Display Range'; }
+        field(25; ShowStepDetails; Boolean) { Caption = 'Show Step Details'; }
+        field(26; HideUnscheduled; Boolean) { Caption = 'Hide Unscheduled'; }
     }
     keys { key(PK; EntryNo) { Clustered = true; } }
 }

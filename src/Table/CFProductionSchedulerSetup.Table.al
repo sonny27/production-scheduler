@@ -81,6 +81,14 @@ table 91300 CF_ProductionSchedulerSetup
             Caption = 'Default Scenario';
             TableRelation = CF_ScheduleScenario.Code;
         }
+        field(27; ExcludeNonWorkingHours; Boolean)
+        {
+            Caption = 'Exclude Non-working Hours';
+        }
+        field(28; AutoScheduleBypassCapacity; Boolean)
+        {
+            Caption = 'Auto Schedule Bypass Capacity';
+        }
     }
     keys
     {
@@ -110,70 +118,19 @@ table 91300 CF_ProductionSchedulerSetup
             Error(HorizonErr);
     end;
 
-    procedure HourWindows(): JsonArray
-    var
-        Windows: JsonArray;
-    begin
-        AddHourWindow(Windows, MondayStartTime, MondayEndTime, FieldCaption(MondayEndTime));
-        AddHourWindow(Windows, TuesdayStartTime, TuesdayEndTime, FieldCaption(TuesdayEndTime));
-        AddHourWindow(Windows, WednesdayStartTime, WednesdayEndTime, FieldCaption(WednesdayEndTime));
-        AddHourWindow(Windows, ThursdayStartTime, ThursdayEndTime, FieldCaption(ThursdayEndTime));
-        AddHourWindow(Windows, FridayStartTime, FridayEndTime, FieldCaption(FridayEndTime));
-        AddHourWindow(Windows, SaturdayStartTime, SaturdayEndTime, FieldCaption(SaturdayEndTime));
-        AddHourWindow(Windows, SundayStartTime, SundayEndTime, FieldCaption(SundayEndTime));
-        exit(Windows);
-    end;
-
-    local procedure AddHourWindow(var Windows: JsonArray; StartTime: Time; EndTime: Time; EndCaption: Text)
-    var
-        Window: JsonObject;
-        StartMilliseconds: Decimal;
-        EndMilliseconds: Decimal;
-    begin
-        if EndTime <= StartTime then
-            Error(HourWindowErr, EndCaption);
-        StartMilliseconds := StartTime - 000000T;
-        EndMilliseconds := EndTime - 000000T;
-        Window.Add('start', StartMilliseconds);
-        Window.Add('end', EndMilliseconds);
-        Windows.Add(Window);
-    end;
-
-    procedure InitialiseHourlyDefaults()
-    begin
-        InitialiseHourWindow(MondayStartTime, MondayEndTime);
-        InitialiseHourWindow(TuesdayStartTime, TuesdayEndTime);
-        InitialiseHourWindow(WednesdayStartTime, WednesdayEndTime);
-        InitialiseHourWindow(ThursdayStartTime, ThursdayEndTime);
-        InitialiseHourWindow(FridayStartTime, FridayEndTime);
-        InitialiseHourWindow(SaturdayStartTime, SaturdayEndTime);
-        InitialiseHourWindow(SundayStartTime, SundayEndTime);
-    end;
-
-    local procedure InitialiseHourWindow(var StartTime: Time; var EndTime: Time)
-    begin
-        if (StartTime = 0T) and (EndTime = 0T) then begin
-            StartTime := 070000T;
-            EndTime := 180000T;
-        end;
-    end;
-
     trigger OnInsert()
     begin
         ValidateStatuses();
         ValidateHorizon();
-        HourWindows();
     end;
 
     trigger OnModify()
     begin
         ValidateStatuses();
         ValidateHorizon();
-        HourWindows();
     end;
 
     var
         SelectStatusErr: Label 'Select at least one production order status.';
         HorizonErr: Label 'Set Maximum Schedule Days to a value from 1 to 365 in Production Scheduler Setup.';
-        HourWindowErr: Label '%1 must be later than the start time on the same day. Hour-view display windows cannot cross midnight.', Comment = '%1 = weekday end-time field caption';
 }

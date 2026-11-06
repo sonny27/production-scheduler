@@ -80,6 +80,10 @@ page 91300 CF_ProductionScheduler
                 begin
                     ApplyChange(OperationId, Version, 0DT, true);
                 end;
+                trigger OperationsLockRequested(OperationsJson: Text; Locked: Boolean)
+                begin
+                    SetPositionLocks(OperationsJson, Locked);
+                end;
             }
         }
     }
@@ -101,12 +105,15 @@ page 91300 CF_ProductionScheduler
                 begin
                     Picker.LookupMode(true);
                     if Picker.RunModal() = Action::LookupOK then begin
+                        SaveSessionView();
+                        Clear(DraftActions);
                         Picker.GetRecord(Scenario);
                         ActiveScenarioCode := Scenario.Code;
                         Clear(SelectedOperationId);
                         HasPreviousView := false;
                         HasDateUndo := false;
                         LoadDefaults();
+                        RestoreSessionView();
                         ViewChange := 'scenario';
                         Commit();
                         RefreshSchedule();
@@ -121,16 +128,101 @@ page 91300 CF_ProductionScheduler
                 AccessByPermission = tabledata CF_ScheduleDraftOperation = I;
                 ToolTip = 'Copy new orders matching Schedule Options into this scenario, including every routing step for each matched order. Existing drafts are not overwritten.';
                 trigger OnAction()
-                var
-                    Count: Integer;
                 begin
-                    RequireScenario();
-                    if not Confirm(ImportQst, false, ActiveScenarioCode) then
-                        exit;
-                    Count := Drafts.ImportScope(ActiveScenarioCode, ViewSetup, WorkCenterNo, ProductionOrderNo);
-                    Commit();
-                    RefreshSchedule();
-                    Message(ImportedLbl, Count);
+                    ImportNewOrders(false);
+                end;
+            }
+            action(ImportAndSchedule)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Import and Auto Schedule';
+                Image = CalculateCalendar;
+                AccessByPermission = tabledata CF_ScheduleDraftOperation = I;
+                ToolTip = 'Import new orders from BC and offer to schedule their unscheduled routing chains. Existing drafts and BC are not overwritten.';
+                trigger OnAction()
+                begin
+                    ImportNewOrders(true);
+                end;
+            }
+            action(ResetScheduler)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Reset Scheduler to BC Dates';
+                Image = Restore;
+                AccessByPermission = tabledata CF_ScheduleDraftOperation = D;
+                ToolTip = 'Discard draft changes and position locks for every order already in the active scenario, including hidden orders, and reload current BC routing dates and allocations. BC and other scenarios are unchanged.';
+                trigger OnAction()
+                begin
+                    ResetScenario();
+                end;
+            }
+            action(SelectRoutingChain)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Select Routing Chain';
+                Image = SelectEntries;
+                ToolTip = 'Select all routing steps in the active operation chain, including steps outside the visible dates. Selection does not enable group dragging.';
+                trigger OnAction()
+                begin
+                    CurrPage.Schedule.SelectOperations('chain');
+                end;
+            }
+            action(SelectFollowingSteps)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Select Following Steps';
+                Image = SelectEntries;
+                ToolTip = 'Select the active step and its following linked steps.';
+                trigger OnAction()
+                begin
+                    CurrPage.Schedule.SelectOperations('following');
+                end;
+            }
+            action(ClearOperationSelection)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Clear Operation Selection';
+                Image = ClearFilter;
+                ToolTip = 'Clear the multiple-operation selection.';
+                trigger OnAction()
+                begin
+                    CurrPage.Schedule.SelectOperations('clear');
+                end;
+            }
+            action(LockSelectedPositions)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Lock Selected Positions';
+                Image = Lock;
+                AccessByPermission = tabledata CF_ScheduleDraftOperation = M;
+                ToolTip = 'Fix the selected scheduled operations at their current draft dates. Linked moves and Auto Schedule must respect these reservations.';
+                trigger OnAction()
+                begin
+                    CurrPage.Schedule.LockSelectedOperations(true);
+                end;
+            }
+            action(UnlockSelectedPositions)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Unlock Selected Positions';
+                Image = ReleaseDoc;
+                AccessByPermission = tabledata CF_ScheduleDraftOperation = M;
+                ToolTip = 'Allow selected positions to be changed by planning again.';
+                trigger OnAction()
+                begin
+                    CurrPage.Schedule.LockSelectedOperations(false);
+                end;
+            }
+            action(UndoDraftChange)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Undo Last Draft Change';
+                Image = Undo;
+                AccessByPermission = tabledata CF_ScheduleDraftOperation = M;
+                ToolTip = 'Undo the last successful manual move, confirmation or lock change in this open scheduler, including its affected routing steps. Concurrent edits or changed BC baselines block undo.';
+                trigger OnAction()
+                begin
+                    UndoDraft();
                 end;
             }
             action(ScheduleDetails)
@@ -167,9 +259,11 @@ page 91300 CF_ProductionScheduler
                     Options: Page CF_SchedulerOptions;
                 begin
                     Options.SetOptions(ViewSetup, ViewStartDate, ViewDays, WorkCenterNo, ProductionOrderNo, IncludeProblemSteps);
+                    Options.SetDisplayOptions(ShowSearch, ShowDisplayRange, ShowStepDetails);
                     if Options.RunModal() = Action::OK then begin
                         RememberDates();
                         Options.GetOptions(ViewSetup, ViewStartDate, ViewDays, WorkCenterNo, ProductionOrderNo, IncludeProblemSteps);
+                        Options.GetDisplayOptions(ShowSearch, ShowDisplayRange, ShowStepDetails);
                         RangeStartDate := ViewStartDate;
                         CustomRange := false;
                         DocumentFocused := false;
@@ -178,6 +272,43 @@ page 91300 CF_ProductionScheduler
                         ClearPresetFormulas();
                         RefreshSchedule();
                     end;
+                end;
+            }
+            action(HowToUseScheduler)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'How to Use Scheduler';
+                Image = Help;
+                ToolTip = 'Show instructions for scenarios, dragging, routing links, capacity colours and optional display panels.';
+                trigger OnAction()
+                begin
+                    Mgt.ShowHelp();
+                end;
+            }
+            action(HideWeekends)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Hide Weekends';
+                Image = Calendar;
+                Visible = not WeekendsHidden;
+                ToolTip = 'Hide Saturdays and Sundays from the timeline, even when they have working capacity. This changes the display only.';
+                trigger OnAction()
+                begin
+                    WeekendsHidden := true;
+                    RefreshSchedule();
+                end;
+            }
+            action(ShowWeekends)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Show Weekends';
+                Image = Calendar;
+                Visible = WeekendsHidden;
+                ToolTip = 'Show Saturdays and Sundays again. Hide Non-working Days still applies independently if enabled.';
+                trigger OnAction()
+                begin
+                    WeekendsHidden := false;
+                    RefreshSchedule();
                 end;
             }
             action(HideNonWorkingDays)
@@ -200,7 +331,7 @@ page 91300 CF_ProductionScheduler
                 Caption = 'Show All Days';
                 Image = Calendar;
                 Visible = NonWorkingDaysHidden;
-                ToolTip = 'Restore all calendar days, including days without working capacity. The configured daily display times still apply in Hour view.';
+                ToolTip = 'Restore all calendar days, including days without working capacity. Hour view shows a full day and shades non-working intervals from each resource calendar.';
                 trigger OnAction()
                 begin
                     NonWorkingDaysHidden := false;
@@ -208,39 +339,58 @@ page 91300 CF_ProductionScheduler
                     RefreshSchedule();
                 end;
             }
+            action(HideUnscheduled)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Hide Unscheduled';
+                Image = Hide;
+                Visible = not UnscheduledHidden;
+                ToolTip = 'Hide the Unscheduled rows under each work centre. This changes the display only.';
+                trigger OnAction()
+                begin
+                    UnscheduledHidden := true;
+                    RefreshSchedule();
+                end;
+            }
+            action(ShowUnscheduled)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Show Unscheduled';
+                Image = ShowList;
+                Visible = UnscheduledHidden;
+                ToolTip = 'Show the Unscheduled rows under each work centre.';
+                trigger OnAction()
+                begin
+                    UnscheduledHidden := false;
+                    RefreshSchedule();
+                end;
+            }
             action(AutoSchedule)
             {
                 ApplicationArea = Manufacturing;
-                Caption = 'Auto Schedule';
+                Caption = 'Schedule Unscheduled';
                 Image = CalculateCalendar;
                 AccessByPermission = tabledata CF_ScheduleDraftOperation = M;
-                ToolTip = 'Schedule up to 100 unconfirmed draft operations matching Schedule Options. BC remains unchanged. Text search and problem visibility are display-only.';
+                ToolTip = 'Schedule unscheduled routing chains around existing scheduled and locked reservations, using the configured capacity method and due-date priority. BC remains unchanged.';
                 trigger OnAction()
                 var
-                    TempResults: Record CF_AutoScheduleBuffer temporary;
-                    AutoScheduler: Codeunit CF_AutoSchedule;
-                    ResultsPage: Page CF_AutoScheduleResults;
-                    LastDate: Date;
+                    TempImported: Record CF_ScheduleDraftOrder temporary;
                 begin
-                    ReloadPlanningSettings();
-                    NormaliseRange();
-                    RefreshSchedule();
-                    RequireScenario();
-                    AutoScheduler.Prepare(TempResults, ActiveScenarioCode, ViewSetup, WorkCenterNo, ProductionOrderNo);
-                    if TempResults.IsEmpty() then begin
-                        Message(NoCandidatesLbl);
-                        exit;
-                    end;
-                    LastDate := RangeStartDate + ViewSetup.MaximumScheduleDays - 1;
-                    if not Confirm(AutoScheduleQst, false, TempResults.Count(), ViewSetup.AutoScheduleMethod,
-                        ViewSetup.AutoSchedulePriority, ViewStartDate, LastDate, Mgt.StatusCaption(ViewSetup))
-                    then
-                        exit;
-                    Commit();
-                    AutoScheduler.Execute(TempResults, ActiveScenarioCode, ViewSetup, ViewStartDate, LastDate, WorkCenterNo);
-                    RefreshSchedule();
-                    ResultsPage.SetResults(TempResults);
-                    ResultsPage.RunModal();
+                    RunAutoSchedule(false, false, TempImported);
+                end;
+            }
+            action(ReplanUnlocked)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Replan Unlocked Operations';
+                Image = CalculateCalendar;
+                AccessByPermission = tabledata CF_ScheduleDraftOperation = M;
+                ToolTip = 'Explicitly rebuild unlocked routing chains matching Schedule Options using due-date priority. Locked steps and unrelated orders stay fixed. Review the results, including late finishes.';
+                trigger OnAction()
+                var
+                    TempImported: Record CF_ScheduleDraftOrder temporary;
+                begin
+                    RunAutoSchedule(true, false, TempImported);
                 end;
             }
             action(Refresh)
@@ -488,12 +638,22 @@ page 91300 CF_ProductionScheduler
                 Caption = 'Schedule';
                 actionref(ScenariosPromoted; SelectScenario) { }
                 actionref(ImportOrdersPromoted; ImportOrders) { }
+                actionref(ImportAndSchedulePromoted; ImportAndSchedule) { }
+                actionref(ResetSchedulerPromoted; ResetScheduler) { }
+                actionref(UndoDraftChangePromoted; UndoDraftChange) { }
+                actionref(SelectRoutingChainPromoted; SelectRoutingChain) { }
+                actionref(SelectFollowingStepsPromoted; SelectFollowingSteps) { }
+                actionref(LockSelectedPositionsPromoted; LockSelectedPositions) { }
+                actionref(UnlockSelectedPositionsPromoted; UnlockSelectedPositions) { }
                 actionref(ScheduleDetailsPromoted; ScheduleDetails) { }
                 actionref(CommitToBCPromoted; CommitToBC) { }
                 actionref(ScheduleOptionsPromoted; ScheduleOptions) { }
                 actionref(HideNonWorkingDaysPromoted; HideNonWorkingDays) { }
                 actionref(ShowAllDaysPromoted; ShowAllDays) { }
+                actionref(HideUnscheduledPromoted; HideUnscheduled) { }
+                actionref(ShowUnscheduledPromoted; ShowUnscheduled) { }
                 actionref(AutoSchedulePromoted; AutoSchedule) { }
+                actionref(ReplanUnlockedPromoted; ReplanUnlocked) { }
                 actionref(RefreshPromoted; Refresh) { }
                 actionref(TodayPromoted; Today) { }
                 actionref(PreviousPromoted; Previous) { }
@@ -503,6 +663,8 @@ page 91300 CF_ProductionScheduler
             group(DateView)
             {
                 Caption = 'Date View';
+                actionref(HideWeekendsPromoted; HideWeekends) { }
+                actionref(ShowWeekendsPromoted; ShowWeekends) { }
                 actionref(ZoomToDocumentPromoted; ZoomToDocument) { }
                 actionref(RestorePreviousViewPromoted; RestorePreviousView) { }
                 actionref(ChangePresetPromoted; ChangePreset) { }
@@ -531,6 +693,13 @@ page 91300 CF_ProductionScheduler
         else
             if Scenario.FindFirst() then
                 ActiveScenarioCode := Scenario.Code;
+        if ProductionOrderNo = '' then
+            RestoreSessionView();
+    end;
+
+    trigger OnClosePage()
+    begin
+        SaveSessionView();
     end;
 
     procedure SetOrder(OrderNo: Code[20])
@@ -538,9 +707,28 @@ page 91300 CF_ProductionScheduler
         ProductionOrderNo := OrderNo;
     end;
 
+    local procedure SaveSessionView()
+    var
+        TempState: Record CF_SchedulerViewState temporary;
+        SessionState: Codeunit CF_SchedulerSessionState;
+    begin
+        CaptureView(TempState);
+        SessionState.Save(ActiveScenarioCode, TempState, TempPreviousView, HasPreviousView);
+    end;
+
+    local procedure RestoreSessionView()
+    var
+        TempState: Record CF_SchedulerViewState temporary;
+        SessionState: Codeunit CF_SchedulerSessionState;
+    begin
+        if SessionState.Restore(ActiveScenarioCode, TempState, TempPreviousView, HasPreviousView) then
+            RestoreView(TempState);
+    end;
+
     local procedure LoadDefaults()
     begin
         NonWorkingDaysHidden := false;
+        UnscheduledHidden := false;
         IncludeProblemSteps := true;
         ViewSetup.LoadDefaults();
         ViewSetup.ValidateHorizon();
@@ -577,12 +765,18 @@ page 91300 CF_ProductionScheduler
         Payload := Mgt.BuildPayload(ViewSetup, ViewStartDate, ViewDays, WorkCenterNo, ProductionOrderNo, DocumentFocused);
         Mgt.AddNavigation(Payload, RangeStartDate, DisplayRangeDays, ViewStartDate, ViewDays);
         Payload.Add('hideNonWorkingDays', NonWorkingDaysHidden);
+        Payload.Add('hideWeekends', WeekendsHidden);
+        Payload.Add('hideUnscheduled', UnscheduledHidden);
         Payload.Add('includeProblemSteps', IncludeProblemSteps);
+        Payload.Add('showSearch', ShowSearch);
+        Payload.Add('showDisplayRange', ShowDisplayRange);
+        Payload.Add('showStepDetails', ShowStepDetails);
         Payload.Add('documentFocus', DocumentFocused);
         Payload.Add('fitToWindow', FitToWindow);
         Payload.Add('viewChange', ViewChange);
         Payload.Add('selectedOperationId', SelectedOperationId);
         Payload.Add('focusNotice', FocusNotice);
+        Payload.Add('viewStateKey', CompanyName() + ':' + Format(UserSecurityId(), 0, 4) + ':' + ActiveScenarioCode);
     end;
 
     local procedure ReloadPlanningSettings()
@@ -721,6 +915,7 @@ page 91300 CF_ProductionScheduler
         DocumentFocused := true;
         FitToWindow := true;
         NonWorkingDaysHidden := false;
+        WeekendsHidden := false;
         IncludeProblemSteps := true;
         ClearPresetFormulas();
         FocusNotice := StrSubstNo(DocumentFocusLbl, Status, OrderNo);
@@ -759,10 +954,15 @@ page 91300 CF_ProductionScheduler
         State.IncludeFirmPlanned := ViewSetup.IncludeFirmPlanned;
         State.IncludeReleased := ViewSetup.IncludeReleased;
         State.HideNonWorkingDays := NonWorkingDaysHidden;
+        State.HideWeekends := WeekendsHidden;
+        State.HideUnscheduled := UnscheduledHidden;
         State.IncludeProblemSteps := IncludeProblemSteps;
         State.DocumentFocused := DocumentFocused;
         State.SelectedOperationId := CopyStr(SelectedOperationId, 1, MaxStrLen(State.SelectedOperationId));
         State.FocusNotice := CopyStr(FocusNotice, 1, MaxStrLen(State.FocusNotice));
+        State.ShowSearch := ShowSearch;
+        State.ShowDisplayRange := ShowDisplayRange;
+        State.ShowStepDetails := ShowStepDetails;
     end;
 
     local procedure RestoreDates(State: Record CF_SchedulerViewState temporary)
@@ -788,16 +988,173 @@ page 91300 CF_ProductionScheduler
         ViewSetup.IncludeFirmPlanned := State.IncludeFirmPlanned;
         ViewSetup.IncludeReleased := State.IncludeReleased;
         NonWorkingDaysHidden := State.HideNonWorkingDays;
+        WeekendsHidden := State.HideWeekends;
+        UnscheduledHidden := State.HideUnscheduled;
         IncludeProblemSteps := State.IncludeProblemSteps;
         DocumentFocused := State.DocumentFocused;
         SelectedOperationId := State.SelectedOperationId;
         FocusNotice := State.FocusNotice;
+        ShowSearch := State.ShowSearch;
+        ShowDisplayRange := State.ShowDisplayRange;
+        ShowStepDetails := State.ShowStepDetails;
     end;
 
     [TryFunction]
     local procedure TryParseStart(Value: Text; var Result: DateTime)
     begin
         Result := Mgt.ParseCivilDateTime(Value);
+    end;
+
+    local procedure ImportNewOrders(ScheduleAfterImport: Boolean)
+    var
+        Existing: Record CF_ScheduleDraftOrder;
+        TempExisting: Record CF_ScheduleDraftOrder temporary;
+        TempImported: Record CF_ScheduleDraftOrder temporary;
+        Count: Integer;
+    begin
+        RequireScenario();
+        ReloadPlanningSettings();
+        if not Confirm(ImportQst, false, ActiveScenarioCode) then
+            exit;
+        Drafts.LockScenario(ActiveScenarioCode);
+        Existing.SetRange(ScenarioCode, ActiveScenarioCode);
+        if Existing.FindSet() then
+            repeat
+                TempExisting := Existing;
+                TempExisting.Insert();
+            until Existing.Next() = 0;
+        Count := Drafts.ImportScope(ActiveScenarioCode, ViewSetup, WorkCenterNo, ProductionOrderNo);
+        if Existing.FindSet() then
+            repeat
+                if not TempExisting.Get(ActiveScenarioCode, Existing.Status, Existing.OrderNo) then begin
+                    TempImported := Existing;
+                    TempImported.Insert();
+                end;
+            until Existing.Next() = 0;
+        Commit();
+        DraftActions.ClearUndo();
+        RefreshSchedule();
+        CurrPage.Schedule.SetDraftStatus('saved', StrSubstNo(ImportedLbl, Count));
+        if ScheduleAfterImport and (Count > 0) then
+            RunAutoSchedule(false, true, TempImported)
+        else
+            Message(ImportedLbl, Count);
+    end;
+
+    local procedure RunAutoSchedule(Replan: Boolean; ImportedOnly: Boolean; var TempImported: Record CF_ScheduleDraftOrder temporary)
+    var
+        TempResults: Record CF_AutoScheduleBuffer temporary;
+        AutoScheduler: Codeunit CF_AutoSchedule;
+        ResultsPage: Page CF_AutoScheduleResults;
+        LastDate: Date;
+        ModeCaption: Text;
+    begin
+        RequireScenario();
+        ReloadPlanningSettings();
+        NormaliseRange();
+        AutoScheduler.SetReplan(Replan);
+        if ImportedOnly then
+            AutoScheduler.SetImportedOrders(TempImported);
+        AutoScheduler.Prepare(TempResults, ActiveScenarioCode, ViewSetup, WorkCenterNo, ProductionOrderNo);
+        TempResults.Reset();
+        TempResults.SetCurrentKey(PriorityDate, OrderNo, Status, RoutingReferenceNo, RoutingNo, SequenceNo, OperationNo);
+        if TempResults.IsEmpty() then begin
+            Message(NoCandidatesLbl);
+            exit;
+        end;
+        LastDate := ViewStartDate + ViewSetup.MaximumScheduleDays - 1;
+        if Replan then
+            ModeCaption := ReplanModeLbl
+        else
+            ModeCaption := UnscheduledModeLbl;
+        if not Confirm(AutoScheduleQst, false, TempResults.Count(), ViewSetup.AutoScheduleMethod,
+            ViewSetup.AutoSchedulePriority, ViewStartDate, LastDate, ModeCaption, ViewSetup.AutoScheduleBypassCapacity)
+        then
+            exit;
+        DraftActions.ClearUndo();
+        CurrPage.Schedule.SetDraftStatus('saving', SavingLbl);
+        Commit();
+        AutoScheduler.Execute(TempResults, ActiveScenarioCode, ViewSetup, ViewStartDate, LastDate, WorkCenterNo);
+        RefreshSchedule();
+        CurrPage.Schedule.SetDraftStatus('saved', BatchSavedLbl);
+        ResultsPage.SetResults(TempResults, ActiveScenarioCode);
+        ResultsPage.RunModal();
+        RefreshSchedule();
+    end;
+
+    local procedure ResetScenario()
+    var
+        Scenario: Record CF_ScheduleScenario;
+        Orders: Record CF_ScheduleDraftOrder;
+        ExpectedRevision: Integer;
+        Failure: Text;
+    begin
+        RequireScenario();
+        Scenario.Get(ActiveScenarioCode);
+        ExpectedRevision := Scenario.Revision;
+        Orders.SetRange(ScenarioCode, ActiveScenarioCode);
+        if Orders.IsEmpty() then begin
+            Message(NoOrdersLbl);
+            exit;
+        end;
+        if not Confirm(ResetScenarioQst, false, Orders.Count(), ActiveScenarioCode) then
+            exit;
+        DraftActions.SetResetRequest(ActiveScenarioCode, ExpectedRevision);
+        CurrPage.Schedule.SetDraftStatus('saving', SavingLbl);
+        Commit();
+        ClearLastError();
+        if not DraftActions.Run() then begin
+            Failure := GetLastErrorText();
+            RefreshSchedule();
+            CurrPage.Schedule.ShowError(Failure);
+            exit;
+        end;
+        Clear(SelectedOperationId);
+        CurrPage.Schedule.SelectOperations('clear');
+        RefreshSchedule();
+        CurrPage.Schedule.SetDraftStatus('saved', ResetSavedLbl);
+    end;
+
+    local procedure SetPositionLocks(OperationsJson: Text; Locked: Boolean)
+    var
+        Failure: Text;
+    begin
+        RequireScenario();
+        DraftActions.SetLockRequest(ActiveScenarioCode, OperationsJson, Locked);
+        CurrPage.Schedule.SetDraftStatus('saving', SavingLbl);
+        Commit();
+        ClearLastError();
+        if not DraftActions.Run() then begin
+            Failure := GetLastErrorText();
+            RefreshSchedule();
+            CurrPage.Schedule.ShowError(Failure);
+            exit;
+        end;
+        RefreshSchedule();
+        CurrPage.Schedule.SetDraftStatus('saved', DraftSavedLbl);
+    end;
+
+    local procedure UndoDraft()
+    var
+        Failure: Text;
+    begin
+        RequireScenario();
+        if not DraftActions.CanUndo(ActiveScenarioCode) then begin
+            Message(NoUndoLbl);
+            exit;
+        end;
+        DraftActions.SetUndoRequest(ActiveScenarioCode);
+        CurrPage.Schedule.SetDraftStatus('saving', SavingLbl);
+        Commit();
+        ClearLastError();
+        if not DraftActions.Run() then begin
+            Failure := GetLastErrorText();
+            RefreshSchedule();
+            CurrPage.Schedule.ShowError(Failure);
+            exit;
+        end;
+        RefreshSchedule();
+        CurrPage.Schedule.SetDraftStatus('saved', UndoSavedLbl);
     end;
 
     local procedure ApplyChange(OperationId: Text; Version: Text; NewStart: DateTime; ConfirmOnly: Boolean)
@@ -809,7 +1166,14 @@ page 91300 CF_ProductionScheduler
     begin
         ClearLastError();
         RequireScenario();
+        if not TryCaptureUndo(OperationId, Version) then begin
+            Failure := GetLastErrorText();
+            RefreshSchedule();
+            CurrPage.Schedule.ShowError(Failure);
+            exit;
+        end;
         Change.SetRequest(ActiveScenarioCode, OperationId, Version, NewStart, ConfirmOnly, '');
+        CurrPage.Schedule.SetDraftStatus('saving', SavingLbl);
         Commit();
         Saved := Change.Run();
         if not Saved then begin
@@ -829,9 +1193,19 @@ page 91300 CF_ProductionScheduler
                     Failure := CancelledLbl;
             end;
         end;
+        if Saved then
+            DraftActions.AcceptUndoRevision(Change.GetOrderRevision());
         RefreshSchedule();
         if not Saved then
-            CurrPage.Schedule.ShowError(Failure);
+            CurrPage.Schedule.ShowError(Failure)
+        else
+            CurrPage.Schedule.SetDraftStatus('saved', DraftSavedLbl);
+    end;
+
+    [TryFunction]
+    local procedure TryCaptureUndo(OperationId: Text; Version: Text)
+    begin
+        DraftActions.CaptureUndoForOperation(ActiveScenarioCode, OperationId, Version);
     end;
 
     local procedure RequireScenario()
@@ -880,10 +1254,12 @@ page 91300 CF_ProductionScheduler
                     Drafts.CheckVersion(Draft, Version);
                     Drafts.ImportOrder(ActiveScenarioCode, Draft.Status, Draft.OrderNo, false);
                     Commit();
+                    DraftActions.ClearUndo();
                     RefreshSchedule();
                 end;
             'commit': CommitDraftOrders(OperationId, Version);
             'order': Mgt.OpenOperation(OperationId, false);
+            'bcRouting': Mgt.OpenOperation(OperationId, true);
             else
                 Error(ContextErr);
         end;
@@ -921,6 +1297,7 @@ page 91300 CF_ProductionScheduler
         end;
         if not Confirm(CommitQst, false, TempOrders.Count(), ActiveScenarioCode) then
             exit;
+        DraftActions.ClearUndo();
         Commit();
         if TempOrders.FindSet() then
             repeat
@@ -971,6 +1348,7 @@ page 91300 CF_ProductionScheduler
         Drafts: Codeunit CF_ScheduleDraftMgt;
         Mgt: Codeunit CF_ProductionSchedulerMgt;
         Dates: Codeunit CF_SchedulerDateMgt;
+        DraftActions: Codeunit CF_SchedulerDraftActions;
         PresetStartFormula: DateFormula;
         PresetEndFormula: DateFormula;
         ActiveScenarioCode: Code[20];
@@ -989,14 +1367,19 @@ page 91300 CF_ProductionScheduler
         ProductionOrderNo: Code[20];
         SelectedOperationId: Text;
         NonWorkingDaysHidden: Boolean;
+        WeekendsHidden: Boolean;
+        UnscheduledHidden: Boolean;
         IncludeProblemSteps: Boolean;
+        ShowSearch: Boolean;
+        ShowDisplayRange: Boolean;
+        ShowStepDetails: Boolean;
         Ready: Boolean;
         ViewModeErr: Label 'Select Hour, Day, Week or Month.';
         NavigationErr: Label 'The selected window is outside the current display range.';
         DocumentFocusLbl: Label 'Document view: %1 %2. All routing resources are included; capacity still includes competing orders.', Comment = '%1 = status, %2 = order number';
         NoDocumentDatesLbl: Label 'No valid routing dates were found; the previous period is retained. Undated steps remain in the unplanned list.';
-        NoCandidatesLbl: Label 'No unconfirmed operations match the Schedule Options filters.';
-        AutoScheduleQst: Label 'Auto Schedule %1 unconfirmed draft operations?\Method: %2\Priority: %3\Range: %4 to %5\Statuses: %6\The work-centre and order filters apply. Text search and problem visibility are display-only.\\Only this scenario changes. Following draft steps are recalculated. Successful edits are saved individually; failures do not undo earlier successes. Finite draft loading reserves serial work-centre slots. BC is not changed. Continue?', Comment = '%1 = count, %2 = method, %3 = priority, %4 = first date, %5 = last date, %6 = statuses';
+        NoCandidatesLbl: Label 'No eligible unlocked routing chains match this action and the Schedule Options filters.';
+        AutoScheduleQst: Label 'Schedule %1 routing chains?\Method: %2\Priority: %3\Range: %4 to %5\Mode: %6\Bypass occupied capacity and daily overload checks: %7\When bypass is enabled, operations may overlap and overload resources without per-chain capacity warnings. Working calendars, routing restrictions, locks and the horizon still apply. Manual moves and Commit to BC retain normal checks.\The work-centre and order filters select complete routing chains. Text search and problem visibility are display-only.\\Locked steps stay fixed. Schedule Unscheduled also keeps existing scheduled steps fixed. Replan recalculates unlocked work. Each chain is atomic; failures do not undo earlier successful chains. Review every result, including late finishes. BC is not changed. Continue?', Comment = '%1 = count, %2 = method, %3 = priority, %4 = first date, %5 = last date, %6 = scheduling mode, %7 = bypass capacity enabled';
         OverloadQst: Label 'This schedule has daily overload:\%1\Save despite this overload? Related operations may also move.', Comment = '%1 = overload report';
         CapacityChangedLbl: Label 'Capacity changed while you were confirming. No changes were saved. Review the refreshed schedule and retry.';
         CancelledLbl: Label 'Scheduling cancelled. No changes were saved.';
@@ -1010,4 +1393,14 @@ page 91300 CF_ProductionScheduler
         TruncatedLbl: Label ' [message truncated]';
         NoChangesLbl: Label 'There are no uncommitted changes in the selected scope.';
         ContextErr: Label 'Unknown scheduler context action. Refresh the page.';
+        UnscheduledModeLbl: Label 'Schedule Unscheduled';
+        ReplanModeLbl: Label 'Replan Unlocked Operations';
+        SavingLbl: Label 'Saving draft...';
+        DraftSavedLbl: Label 'Draft saved. BC is unchanged.';
+        BatchSavedLbl: Label 'Scheduling batch finished. Review each chain result; failed chains were not saved. BC is unchanged.';
+        NoOrdersLbl: Label 'There are no imported orders in the active scenario.';
+        ResetScenarioQst: Label 'Reset all %1 imported orders in scenario %2 to their current BC dates and capacity allocations? Hidden and filtered orders are included. Draft changes and position locks are discarded. No new orders are imported. BC and other scenarios are unchanged. This reset cannot be undone. Continue?', Comment = '%1 = order count, %2 = scenario code';
+        ResetSavedLbl: Label 'Scheduler reset to current BC dates. Draft changes and locks were cleared; BC is unchanged.';
+        NoUndoLbl: Label 'There is no draft change available to undo in this open scheduler. Import, reset, Auto Schedule and BC commit clear the manual undo history.';
+        UndoSavedLbl: Label 'Last draft change undone. BC is unchanged.';
 }

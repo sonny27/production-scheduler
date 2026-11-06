@@ -47,6 +47,94 @@ codeunit 91307 CF_ScheduleDraftMgt
             Error(ConflictErr, DraftOrder.OrderNo);
     end;
 
+    [CommitBehavior(CommitBehavior::Error)]
+    procedure OverrideImportedOrder(ScenarioCode: Code[20]; OperationId: Guid; ExpectedRevision: Integer; var Warning: Text): Boolean
+    var
+        DraftOrder: Record CF_ScheduleDraftOrder;
+        Draft: Record CF_ScheduleDraftOperation;
+        Allocation: Record CF_ScheduleDraftAllocation;
+        Routing: Record "Prod. Order Routing Line";
+        Before: Record CF_SchedulerCapacityBuffer temporary;
+        After: Record CF_SchedulerCapacityBuffer temporary;
+        Capacity: Codeunit CF_SchedulerCapacity;
+        Mgt: Codeunit CF_ProductionSchedulerMgt;
+        TotalMinutes: Decimal;
+        AcceptedWarning: Text;
+        Issue: Text;
+    begin
+        if not Draft.WritePermission() or not DraftOrder.WritePermission() then
+            Error(OverridePermissionErr);
+        GetOperation(ScenarioCode, Format(OperationId), Draft);
+        DraftOrder.Get(ScenarioCode, Draft.Status, Draft.OrderNo);
+        CheckBaseline(DraftOrder);
+        if DraftOrder.Revision <> ExpectedRevision then
+            Error(StaleErr);
+        if DraftOrder.Changed or Draft.Finished or
+           (Draft.Status = Draft.Status::Simulated) or (Draft.Status = Draft.Status::Finished)
+        then
+            Error(OverrideImportedErr);
+        Draft.SetRange(ScenarioCode, ScenarioCode);
+        Draft.SetRange(Status, Draft.Status);
+        Draft.SetRange(OrderNo, Draft.OrderNo);
+        if Draft.FindSet() then
+            repeat
+                if not Draft.Finished then begin
+                    Routing.GetBySystemId(Draft.OperationId);
+                    Issue := Mgt.EditIssue(Routing);
+                    if Issue <> '' then
+                        Error('%1: %2', Draft.OperationNo, Issue);
+                    if ((Draft.Restriction <> '') and (Draft.Restriction <> ComplexErr)) or
+                       (Draft.StartDateTime = 0DT) or (Draft.EndDateTime <= Draft.StartDateTime) or
+                       (Draft.StartDateTime <> Draft.BaselineStart) or (Draft.EndDateTime <> Draft.BaselineEnd)
+                    then
+                        Error(OverrideImportedErr);
+                    Allocation.Reset();
+                    Allocation.SetRange(ScenarioCode, ScenarioCode);
+                    Allocation.SetRange(OperationId, Draft.OperationId);
+                    TotalMinutes := 0;
+                    if Allocation.FindSet() then
+                        repeat
+                            if (Allocation.Minutes <= 0) or (Allocation.CapacityDate = 0D) or
+                               (Allocation.StartDateTime = 0DT) or (Allocation.EndDateTime <= Allocation.StartDateTime) or
+                               (Allocation.Status <> Draft.Status) or (Allocation.OrderNo <> Draft.OrderNo) or
+                               (Allocation.ResourceType <> Draft.ResourceType) or (Allocation.ResourceNo <> Draft.ResourceNo) or
+                               (Allocation.WorkCenterNo <> Draft.WorkCenterNo)
+                            then
+                                Error(OverrideImportedErr);
+                            TotalMinutes += Allocation.Minutes;
+                        until Allocation.Next() = 0;
+                    if (TotalMinutes <= 0) or (Abs(TotalMinutes - Draft.WorkMinutes) > 0.00001) then
+                        Error(OverrideImportedErr);
+                end;
+            until Draft.Next() = 0;
+        Routing.GetBySystemId(OperationId);
+        Capacity.SetScenario(ScenarioCode);
+        Capacity.Snapshot(After, Routing);
+        Before.Copy(After, true);
+        Warning := Capacity.OverloadReport(Before, After, false);
+        if Warning <> '' then
+            if not Confirm(OverrideOverloadQst, false, Warning) then
+                exit(false);
+        AcceptedWarning := Warning;
+        LockScenario(ScenarioCode);
+        DraftOrder.Get(ScenarioCode, DraftOrder.Status, DraftOrder.OrderNo);
+        CheckBaseline(DraftOrder);
+        if DraftOrder.Revision <> ExpectedRevision then
+            Error(StaleErr);
+        Capacity.Snapshot(After, Routing);
+        Before.Copy(After, true);
+        Warning := Capacity.OverloadReport(Before, After, false);
+        if Warning <> AcceptedWarning then
+            Error(StaleErr);
+        Draft.SetRange(Finished, false);
+        Draft.ModifyAll(Confirmed, true);
+        Draft.ModifyAll(Changed, true);
+        DraftOrder.Revision += 1;
+        DraftOrder.Changed := true;
+        DraftOrder.Modify();
+        exit(true);
+    end;
+
     procedure LiveVersion(Status: Enum "Production Order Status"; OrderNo: Code[20]): Text
     var
         Order: Record "Production Order";
@@ -85,6 +173,86 @@ codeunit 91307 CF_ScheduleDraftMgt
                 AppendVersion(Value, Need.SystemId, Need.SystemRowVersion, Count);
             until Need.Next() = 0;
         exit(Value.ToText());
+    end;
+
+    procedure LiveCalendarVersion(Status: Enum "Production Order Status"; OrderNo: Code[20]): Text
+    var
+        CalendarVersions: Dictionary of [Text, Text];
+        Count: Integer;
+    begin
+        exit(CalendarVersion(Status, OrderNo, CalendarVersions, Count));
+    end;
+
+    local procedure CalendarVersion(Status: Enum "Production Order Status"; OrderNo: Code[20]; var CalendarVersions: Dictionary of [Text, Text]; var Count: Integer): Text
+    var
+        Routing: Record "Prod. Order Routing Line";
+        Seen: Dictionary of [Text, Boolean];
+        Value: TextBuilder;
+    begin
+        Routing.SetRange(Status, Status);
+        Routing.SetRange("Prod. Order No.", OrderNo);
+        if Routing.FindSet() then
+            repeat
+                AppendCalendarVersion(Routing.Type, Routing."No.", Seen, CalendarVersions, Count, Value);
+                if Routing.Type = Routing.Type::"Machine Center" then
+                    AppendCalendarVersion("Capacity Type"::"Work Center", Routing."Work Center No.", Seen, CalendarVersions, Count, Value);
+            until Routing.Next() = 0;
+        exit(Value.ToText());
+    end;
+
+    local procedure AppendCalendarVersion(ResourceType: Enum "Capacity Type"; ResourceNo: Code[20]; var Seen: Dictionary of [Text, Boolean]; var CalendarVersions: Dictionary of [Text, Text]; var Count: Integer; var Value: TextBuilder)
+    var
+        Calendar: Record "Calendar Entry";
+        ResourceVersion: TextBuilder;
+        ResourceKey: Text;
+    begin
+        ResourceKey := Format(ResourceType.AsInteger(), 0, 9) + ':' + ResourceNo;
+        if Seen.ContainsKey(ResourceKey) then
+            exit;
+        Seen.Add(ResourceKey, true);
+        Value.Append(ResourceKey + ';');
+        if not CalendarVersions.ContainsKey(ResourceKey) then begin
+            Calendar.SetRange("Capacity Type", ResourceType);
+            Calendar.SetRange("No.", ResourceNo);
+            if Calendar.FindSet() then
+                repeat
+                    AppendVersion(ResourceVersion, Calendar.SystemId, Calendar.SystemRowVersion, Count);
+                until Calendar.Next() = 0;
+            CalendarVersions.Add(ResourceKey, ResourceVersion.ToText());
+        end;
+        Value.Append(CalendarVersions.Get(ResourceKey));
+    end;
+
+    procedure AddScenarioWarnings(ScenarioCode: Code[20]; var Warnings: JsonArray)
+    var
+        DraftOrder: Record CF_ScheduleDraftOrder;
+        Conflicts: Integer;
+        CalendarsChanged: Integer;
+        CalendarsUnknown: Integer;
+        Scanned: Integer;
+        CalendarCount: Integer;
+        CalendarVersions: Dictionary of [Text, Text];
+    begin
+        DraftOrder.SetRange(ScenarioCode, ScenarioCode);
+        if DraftOrder.FindSet() then
+            repeat
+                Scanned += 1;
+                if Scanned > 3000 then
+                    Error(LimitErr);
+                if DraftOrder.GetBaseline() <> LiveVersion(DraftOrder.Status, DraftOrder.OrderNo) then
+                    Conflicts += 1;
+                if DraftOrder.GetCalendarBaseline() = '' then
+                    CalendarsUnknown += 1
+                else
+                    if DraftOrder.GetCalendarBaseline() <> CalendarVersion(DraftOrder.Status, DraftOrder.OrderNo, CalendarVersions, CalendarCount) then
+                        CalendarsChanged += 1;
+            until DraftOrder.Next() = 0;
+        if Conflicts > 0 then
+            Warnings.Add(StrSubstNo(ScenarioConflictLbl, Conflicts));
+        if CalendarsChanged > 0 then
+            Warnings.Add(StrSubstNo(CalendarChangedLbl, CalendarsChanged));
+        if CalendarsUnknown > 0 then
+            Warnings.Add(StrSubstNo(CalendarUnknownLbl, CalendarsUnknown));
     end;
 
     local procedure AppendVersion(var Value: TextBuilder; Id: Guid; RowVersion: BigInteger; var Count: Integer)
@@ -135,6 +303,7 @@ codeunit 91307 CF_ScheduleDraftMgt
         Count: Integer;
         NeedCount: Integer;
         Exists: Boolean;
+        LockedIds: List of [Guid];
     begin
         Order.Get(Status, OrderNo);
         Clear(CachedScenarioCode);
@@ -153,6 +322,7 @@ codeunit 91307 CF_ScheduleDraftMgt
         if Committed then
             DraftOrder.CommittedAt := CurrentDateTime();
         DraftOrder.SetBaseline(Baseline);
+        DraftOrder.SetCalendarBaseline(LiveCalendarVersion(Status, OrderNo));
         if Exists then
             DraftOrder.Modify()
         else
@@ -160,6 +330,14 @@ codeunit 91307 CF_ScheduleDraftMgt
         Draft.SetRange(ScenarioCode, ScenarioCode);
         Draft.SetRange(Status, Status);
         Draft.SetRange(OrderNo, OrderNo);
+        if Committed then begin
+            Draft.SetRange(PositionLocked, true);
+            if Draft.FindSet() then
+                repeat
+                    LockedIds.Add(Draft.OperationId);
+                until Draft.Next() = 0;
+            Draft.SetRange(PositionLocked);
+        end;
         Draft.DeleteAll();
         Allocation.SetRange(ScenarioCode, ScenarioCode);
         Allocation.SetRange(Status, Status);
@@ -197,6 +375,7 @@ codeunit 91307 CF_ScheduleDraftMgt
                 Draft.NextOperationNo := Routing."Next Operation No.";
                 Draft.Finished := Routing."Routing Status" = Routing."Routing Status"::Finished;
                 Draft.Confirmed := Mgt.IsConfirmed(Routing);
+                Draft.PositionLocked := Committed and LockedIds.Contains(Routing.SystemId);
                 Draft.Restriction := CopyStr(OrderRestriction, 1, MaxStrLen(Draft.Restriction));
                 Draft.SetSnapshot(Mgt.OperationSnapshot(Routing));
                 Need.Reset();
@@ -451,13 +630,18 @@ codeunit 91307 CF_ScheduleDraftMgt
         Item.Replace('version', Version(Draft));
         Item.Replace('start', Mgt.CivilDateTime(DT2Date(Draft.StartDateTime), DT2Time(Draft.StartDateTime)));
         Item.Replace('end', Mgt.CivilDateTime(DT2Date(Draft.EndDateTime), DT2Time(Draft.EndDateTime)));
+        Item.Add('workCenter', 'W:' + Draft.WorkCenterNo);
+        Item.Add('workMinutes', Draft.WorkMinutes);
         Item.Replace('confirmed', Draft.Confirmed);
         Item.Replace('issue', Issue);
         Item.Replace('problems', ProblemArray);
-        Item.Replace('editable', (Issue = '') and Draft.WritePermission());
+        Item.Replace('editable', (Issue = '') and not Draft.PositionLocked and Draft.WritePermission());
         Item.Replace('canConfirm', (Issue = '') and ValidDates and Draft.WritePermission());
         Item.Replace('late', Late);
         Item.Add('draftChanged', Draft.Changed);
+        Item.Add('positionLocked', Draft.PositionLocked);
+        Item.Add('canLock', (Issue = '') and Draft.Confirmed and not Draft.Finished and ValidDates and Draft.WritePermission());
+        Item.Add('canUnlock', Draft.PositionLocked and Draft.WritePermission());
         Item.Add('canReset', Draft.WritePermission());
         Item.Add('canCommit', DraftOrder.Changed and not Conflict and Routing.WritePermission() and State.WritePermission());
         exit(Item);
@@ -491,9 +675,15 @@ codeunit 91307 CF_ScheduleDraftMgt
         MissingErr: Label 'This step is no longer in the scenario. Refresh the scheduler.';
         StaleErr: Label 'Another planner changed this draft order. Refresh before editing, resetting or committing.';
         ConflictErr: Label 'BC order %1 changed since import. Its draft is blocked. Use Reset Order Draft from BC and replan.', Comment = '%1 = order number';
+        ScenarioConflictLbl: Label '%1 orders in this scenario have changed in BC since import, including orders outside the current view. Draft dates have not been overwritten. Review conflicts and reset affected orders before editing or committing.', Comment = '%1 = order count';
+        CalendarChangedLbl: Label 'Working calendars changed since import for %1 orders. Saved draft dates are retained; review capacity and explicitly replan before committing.', Comment = '%1 = order count';
+        CalendarUnknownLbl: Label '%1 orders were imported before calendar snapshots were available. Saved dates are retained, but historical calendar changes cannot be checked. Reset affected orders from BC to record a calendar baseline.', Comment = '%1 = order count';
         LimitErr: Label 'Draft safety limit exceeded (3,000 operations per scenario, 1,000 per order/view, or 50,000 related records). Use a smaller scenario.';
         NoRoutingErr: Label 'Order %1 has no routing. Refresh it in BC before importing.', Comment = '%1 = order number';
         ComplexErr: Label 'Draft recalculation currently supports serial routing with one concurrent capacity and no queue, wait or move time. This order remains view-only.';
+        OverridePermissionErr: Label 'You do not have permission to save draft scheduling confirmations.';
+        OverrideImportedErr: Label 'Override requires an unchanged imported order with valid BC dates and complete allocations. Invalid or partially consumed demand, simulated/finished orders and modified drafts cannot be overridden. Reset the order from BC and review its routing.';
+        OverrideOverloadQst: Label 'The retained allocations exceed capacity, including competing orders:\%1\Keep the existing dates and allocations and mark this order scheduled in the draft anyway? BC will not be changed.', Comment = '%1 = overload report';
         InvalidNeedErr: Label 'Partially consumed, distributed, undated or inconsistent capacity demand is view-only. Review and refresh the order in BC.';
         NoNeedErr: Label 'No positive calculated capacity demand. Refresh the production order in BC and reset its draft.';
         ResourceErr: Label 'The assigned draft resource is missing, inconsistent, or outside this view.';

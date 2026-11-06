@@ -75,6 +75,28 @@ page 91303 CF_SchedulerOptions
                     ToolTip = 'Specifies an exact production order number to show. Hidden orders still contribute to capacity.';
                 }
             }
+            group(DisplayOptions)
+            {
+                Caption = 'Display Options';
+                field(ShowSearch; ShowSearch)
+                {
+                    ApplicationArea = Manufacturing;
+                    Caption = 'Show Search';
+                    ToolTip = 'Specifies whether the text search box is displayed. Hiding it clears the text search so no invisible search filter remains. Off by default for each scheduler session.';
+                }
+                field(ShowDisplayRange; ShowDisplayRange)
+                {
+                    ApplicationArea = Manufacturing;
+                    Caption = 'Show Display Range';
+                    ToolTip = 'Specifies whether the bottom date-range slider is displayed. Date View actions remain available when it is hidden. Off by default for each scheduler session.';
+                }
+                field(ShowStepDetails; ShowStepDetails)
+                {
+                    ApplicationArea = Manufacturing;
+                    Caption = 'Show Selected Step Details';
+                    ToolTip = 'Specifies whether the selected-step panel is displayed below the timeline. Hover details and right-click actions remain available when it is hidden. Off by default for each scheduler session.';
+                }
+            }
         }
     }
 
@@ -115,6 +137,20 @@ page 91303 CF_SchedulerOptions
         ShowProblems := IncludeProblemSteps;
     end;
 
+    procedure SetDisplayOptions(SearchVisible: Boolean; RangeVisible: Boolean; DetailsVisible: Boolean)
+    begin
+        ShowSearch := SearchVisible;
+        ShowDisplayRange := RangeVisible;
+        ShowStepDetails := DetailsVisible;
+    end;
+
+    procedure GetDisplayOptions(var SearchVisible: Boolean; var RangeVisible: Boolean; var DetailsVisible: Boolean)
+    begin
+        SearchVisible := ShowSearch;
+        RangeVisible := ShowDisplayRange;
+        DetailsVisible := ShowStepDetails;
+    end;
+
     var
         ViewSetup: Record CF_ProductionSchedulerSetup;
         Mgt: Codeunit CF_ProductionSchedulerMgt;
@@ -124,6 +160,9 @@ page 91303 CF_SchedulerOptions
         ProductionOrderNo: Code[20];
         StatusText: Text;
         IncludeProblemSteps: Boolean;
+        ShowSearch: Boolean;
+        ShowDisplayRange: Boolean;
+        ShowStepDetails: Boolean;
         StartDateErr: Label 'Enter a starting date.';
         ViewDaysErr: Label 'Enter a number of days from 1 to 366.';
 }

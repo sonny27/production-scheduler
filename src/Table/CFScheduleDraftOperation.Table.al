@@ -34,6 +34,7 @@ table 91309 CF_ScheduleDraftOperation
         field(23; DueDate; Date) { Caption = 'Due Date'; }
         field(24; Restriction; Text[2048]) { Caption = 'Draft Calculation Restriction'; }
         field(25; Snapshot; Blob) { Caption = 'Routing Details Snapshot'; }
+        field(26; PositionLocked; Boolean) { Caption = 'Position Locked'; }
     }
     keys
     {

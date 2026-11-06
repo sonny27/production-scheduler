@@ -31,6 +31,7 @@ page 91309 CF_ScheduleDraftRouting
                 field(WorkMinutes; Rec.WorkMinutes) { ApplicationArea = Manufacturing; ToolTip = 'Specifies the calculated setup and run capacity demand captured from BC, in minutes.'; }
                 field(Confirmed; Rec.Confirmed) { ApplicationArea = Manufacturing; ToolTip = 'Specifies whether the step has been scheduled in this draft.'; }
                 field(Changed; Rec.Changed) { ApplicationArea = Manufacturing; ToolTip = 'Specifies whether this step has uncommitted changes.'; }
+                field(PositionLocked; Rec.PositionLocked) { ApplicationArea = Manufacturing; ToolTip = 'Specifies whether the planner locked this step''s draft position. Locked steps cannot be dragged or edited manually and stay fixed when the draft is recalculated. Unlock the step in the scheduler first.'; }
                 field(Restriction; Rec.Restriction) { ApplicationArea = Manufacturing; ToolTip = 'Specifies a draft calculation limitation captured at import. The scheduler also rechecks current BC restrictions, blocked resources and conflicts.'; }
             }
         }

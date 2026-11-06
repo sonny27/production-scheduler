@@ -23,8 +23,12 @@ controladdin CF_ProductionSchedulerAddIn
     event OperationStartChangeRequested(OperationId: Text; Version: Text; StartText: Text);
     event OperationConfirmRequested(OperationId: Text; Version: Text);
     event OperationContextRequested(OperationId: Text; Version: Text; Command: Text);
+    event OperationsLockRequested(OperationsJson: Text; Locked: Boolean);
 
     procedure LoadSchedule(Payload: JsonObject);
     procedure SetCurrentTime(CurrentTimeText: Text);
     procedure ShowError(MessageText: Text);
+    procedure SelectOperations(Command: Text);
+    procedure LockSelectedOperations(Locked: Boolean);
+    procedure SetDraftStatus(State: Text; MessageText: Text);
 }

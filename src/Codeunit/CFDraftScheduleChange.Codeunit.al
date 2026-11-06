@@ -24,6 +24,7 @@ codeunit 91308 CF_DraftScheduleChange
         Capacity: Codeunit CF_SchedulerCapacity;
         Warning: Text;
         Cursor: DateTime;
+        MustMove: Boolean;
     begin
         Setup.LoadDefaults();
         Setup.ValidateHorizon();
@@ -37,7 +38,8 @@ codeunit 91308 CF_DraftScheduleChange
         Capacity.SetScenario(ScenarioCode);
         Capacity.Snapshot(TempBefore, Routing);
         ChangedCount := 0;
-        ScannedIntervals := 0;
+        Clear(ExcludedOperations);
+        Clear(Slots);
         if ConfirmOnly then begin
             if (Draft.StartDateTime = 0DT) or (Draft.EndDateTime <= Draft.StartDateTime) then
                 Error(DatesErr);
@@ -45,18 +47,25 @@ codeunit 91308 CF_DraftScheduleChange
             Draft.Changed := true;
             Draft.Modify();
         end else begin
+            if Draft.PositionLocked then
+                Error(LockedErr, Draft.OperationNo);
             if RequestedStart = 0DT then
                 Error(DatesErr);
             if Automatic then begin
                 if (FirstDate = 0D) or (LastDate < FirstDate) or
-                   (LastDate - FirstDate + 1 > Setup.MaximumScheduleDays) or
-                   (Setup.AutoScheduleMethod <> Method)
+                   (LastDate - FirstDate + 1 > Setup.MaximumScheduleDays)
                 then
                     Error(HorizonErr);
+                if (Setup.AutoScheduleMethod <> Method) or
+                   (Setup.AutoScheduleBypassCapacity <> BypassCapacity)
+                then
+                    Error(PlanningChangedErr);
             end else begin
+                Method := Setup.AutoScheduleMethod;
                 FirstDate := DT2Date(RequestedStart);
                 LastDate := FirstDate + Setup.MaximumScheduleDays - 1;
             end;
+            ValidateChain(Draft);
             Following.SetCurrentKey(ScenarioCode, Status, OrderNo, RoutingReferenceNo, RoutingNo, SequenceNo, OperationNo);
             Following.SetRange(ScenarioCode, ScenarioCode);
             Following.SetRange(Status, Draft.Status);
@@ -66,33 +75,44 @@ codeunit 91308 CF_DraftScheduleChange
             Following.SetFilter(SequenceNo, '>=%1', Draft.SequenceNo);
             if Following.FindSet() then
                 repeat
-                    ValidateOperation(Following);
-                    Allocation.Reset();
-                    Allocation.SetRange(ScenarioCode, ScenarioCode);
-                    Allocation.SetRange(OperationId, Following.OperationId);
-                    Allocation.DeleteAll();
+                    if Automatic and CanMove(Following) then
+                        ExcludedOperations.Add(Following.OperationId);
                 until Following.Next() = 0;
-            Cursor := RequestedStart;
             if Following.FindSet() then
                 repeat
-                    if Following.SequenceNo = Draft.SequenceNo then
-                        if Following.OperationId <> Draft.OperationId then
-                            Error(DependencyErr);
-                    Cursor := EarliestStart(Following, Cursor);
-                    Calculate(Following, Cursor);
-                    Cursor := Following.EndDateTime;
                     if Following.OperationId = Draft.OperationId then
-                        Following.Confirmed := true;
-                    Following.Changed := true;
-                    Following.Modify();
-                    ChangedCount += 1;
+                        Cursor := RequestedStart
+                    else
+                        if Automatic and CanMove(Following) then
+                            Cursor := CreateDateTime(FirstDate, 0T)
+                        else
+                            Cursor := Following.StartDateTime;
+                    Cursor := EarliestStart(Following, Cursor);
+                    MustMove := (Following.OperationId = Draft.OperationId) or
+                        (Automatic and CanMove(Following)) or (Cursor > Following.StartDateTime);
+                    if MustMove then begin
+                        if not CanMove(Following) then
+                            Error(LockedErr, Following.OperationNo);
+                        ValidateOperation(Following);
+                        Allocation.Reset();
+                        Allocation.SetRange(ScenarioCode, ScenarioCode);
+                        Allocation.SetRange(OperationId, Following.OperationId);
+                        Allocation.DeleteAll();
+                        Calculate(Following, Cursor);
+                        Following.Confirmed := Following.Confirmed or Automatic or (Following.OperationId = Draft.OperationId);
+                        Following.Changed := true;
+                        Following.Modify();
+                        ChangedCount += 1;
+                    end;
+                    if ExcludedOperations.Contains(Following.OperationId) then
+                        ExcludedOperations.Remove(Following.OperationId);
                 until Following.Next() = 0;
         end;
         Capacity.Snapshot(TempAfter, Routing);
         Warning := Capacity.OverloadReport(TempBefore, TempAfter, Setup.OverloadPolicy = Setup.OverloadPolicy::Block);
-        if Warning <> '' then begin
+        if (Warning <> '') and not (Automatic and BypassCapacity) then begin
             if (Setup.OverloadPolicy = Setup.OverloadPolicy::Block) or
-               (Automatic and (Method = Method::FiniteCapacity))
+               (not ConfirmOnly and (Method = Method::FiniteCapacity))
             then
                 Error(OverloadErr, Warning);
             if Warning <> AcceptedWarning then
@@ -102,6 +122,43 @@ codeunit 91308 CF_DraftScheduleChange
         ResultRevision := DraftOrder.Revision;
         DraftOrder.Changed := true;
         DraftOrder.Modify();
+    end;
+
+    local procedure CanMove(Draft: Record CF_ScheduleDraftOperation): Boolean
+    begin
+        exit(not Draft.PositionLocked and not Draft.Finished and
+            (not Automatic or Replan or not Draft.Confirmed));
+    end;
+
+    local procedure ValidateChain(Selected: Record CF_ScheduleDraftOperation)
+    var
+        Step: Record CF_ScheduleDraftOperation;
+        Previous: Record CF_ScheduleDraftOperation;
+        First: Boolean;
+    begin
+        Step.SetCurrentKey(ScenarioCode, Status, OrderNo, RoutingReferenceNo, RoutingNo, SequenceNo, OperationNo);
+        Step.SetRange(ScenarioCode, ScenarioCode);
+        Step.SetRange(Status, Selected.Status);
+        Step.SetRange(OrderNo, Selected.OrderNo);
+        Step.SetRange(RoutingReferenceNo, Selected.RoutingReferenceNo);
+        Step.SetRange(RoutingNo, Selected.RoutingNo);
+        First := true;
+        if Step.FindSet() then
+            repeat
+                if First then begin
+                    if Step.PreviousOperationNo <> '' then
+                        Error(DependencyErr);
+                    First := false;
+                end else
+                    if (Step.PreviousOperationNo <> Previous.OperationNo) or
+                       (Previous.NextOperationNo <> Step.OperationNo) or
+                       (Step.SequenceNo <= Previous.SequenceNo)
+                    then
+                        Error(DependencyErr);
+                Previous := Step;
+            until Step.Next() = 0;
+        if First or (Previous.NextOperationNo <> '') then
+            Error(DependencyErr);
     end;
 
     local procedure ValidateOperation(Draft: Record CF_ScheduleDraftOperation)
@@ -131,11 +188,13 @@ codeunit 91308 CF_DraftScheduleChange
         Previous.SetRange(OrderNo, Draft.OrderNo);
         Previous.SetRange(RoutingReferenceNo, Draft.RoutingReferenceNo);
         Previous.SetRange(RoutingNo, Draft.RoutingNo);
-        Previous.SetFilter(OperationNo, Draft.PreviousOperationNo);
+        Previous.SetRange(OperationNo, Draft.PreviousOperationNo);
         if not Previous.FindSet() then
             Error(DependencyErr);
         repeat
-            if (Previous.SequenceNo >= Draft.SequenceNo) or (Previous.EndDateTime = 0DT) then
+            if (Previous.SequenceNo >= Draft.SequenceNo) or (Previous.EndDateTime = 0DT) or
+               (Previous.NextOperationNo <> Draft.OperationNo)
+            then
                 Error(DependencyErr);
             if Previous.EndDateTime > Cursor then
                 Cursor := Previous.EndDateTime;
@@ -149,11 +208,11 @@ codeunit 91308 CF_DraftScheduleChange
         Allocation: Record CF_ScheduleDraftAllocation;
         Remaining: Decimal;
         Work: Decimal;
+        WorkLimit: Decimal;
         Rate: Decimal;
         SlotStart: DateTime;
         SlotEnd: DateTime;
         FreeEnd: DateTime;
-        BusyEnd: DateTime;
         PriorEnd: DateTime;
         Finish: DateTime;
         EntryNo: Integer;
@@ -162,6 +221,9 @@ codeunit 91308 CF_DraftScheduleChange
         Remaining := Draft.WorkMinutes;
         PriorEnd := 0DT;
         Draft.StartDateTime := 0DT;
+        Draft.EndDateTime := 0DT;
+        Slots.Initialize(Draft, ScenarioCode, DT2Date(Cursor), LastDate,
+            (Method = Method::FiniteCapacity) and not BypassCapacity, ExcludedOperations);
         Calendar.SetCurrentKey("Capacity Type", "No.", Date, "Starting Time");
         Calendar.SetRange("Capacity Type", Draft.ResourceType);
         Calendar.SetRange("No.", Draft.ResourceNo);
@@ -175,7 +237,7 @@ codeunit 91308 CF_DraftScheduleChange
                 SlotStart := CreateDateTime(Calendar.Date, Calendar."Starting Time");
                 SlotEnd := Drafts.IntervalEnd(Calendar.Date, Calendar."Starting Time", Calendar."Ending Time");
                 if (SlotEnd <= SlotStart) or (SlotStart < PriorEnd) or
-                   (Calendar.Capacity - Calendar."Absence Capacity" < 1) or (Calendar.Efficiency <= 0)
+                   (Calendar.Capacity - Calendar."Absence Capacity" <= 0) or (Calendar.Efficiency <= 0)
                 then
                     Error(CalendarErr);
                 PriorEnd := SlotEnd;
@@ -184,15 +246,14 @@ codeunit 91308 CF_DraftScheduleChange
                 Rate := Calendar.Efficiency / 100;
                 while (SlotStart < SlotEnd) and (Remaining > 0.000001) do begin
                     FreeEnd := SlotEnd;
-                    BusyEnd := SlotStart;
-                    if Automatic and (Method = Method::FiniteCapacity) then
-                        FindFreeWindow(Draft, Calendar.Date, SlotStart, FreeEnd, BusyEnd);
-                    if BusyEnd > SlotStart then
-                        SlotStart := BusyEnd
+                    if not Slots.Window(Calendar, SlotStart, FreeEnd, WorkLimit) then
+                        SlotStart := FreeEnd
                     else begin
                         Work := (FreeEnd - SlotStart) / 60000 * Rate;
                         if Work > Remaining then
                             Work := Remaining;
+                        if (Method = Method::FiniteCapacity) and not BypassCapacity and (Work > WorkLimit) then
+                            Work := WorkLimit;
                         Finish := SlotStart + Round(Work / Rate * 60000, 1, '>');
                         if Finish > FreeEnd then
                             Finish := FreeEnd;
@@ -214,6 +275,7 @@ codeunit 91308 CF_DraftScheduleChange
                         Allocation.EndDateTime := Finish;
                         Allocation.Minutes := Work;
                         Allocation.Insert();
+                        Slots.Consume(Calendar.Date, Work);
                         Remaining -= Work;
                         SlotStart := Finish;
                     end;
@@ -226,46 +288,6 @@ codeunit 91308 CF_DraftScheduleChange
             Error(HorizonErr);
     end;
 
-    local procedure FindFreeWindow(Draft: Record CF_ScheduleDraftOperation; Day: Date; Cursor: DateTime; var FreeEnd: DateTime; var BusyEnd: DateTime)
-    var
-        Need: Record "Prod. Order Capacity Need";
-        Allocation: Record CF_ScheduleDraftAllocation;
-        Capacity: Codeunit CF_SchedulerCapacity;
-    begin
-        Capacity.SetCommittedFilter(Need);
-        Need.SetRange("Work Center No.", Draft.WorkCenterNo);
-        Need.SetRange(Date, Day);
-        Need.SetFilter("Allocated Time", '>0');
-        if Need.FindSet() then
-            repeat
-                if not Drafts.ReplacesNeed(ScenarioCode, Need) then
-                    ConsiderBusy(CreateDateTime(Need.Date, Need."Starting Time"),
-                        Drafts.IntervalEnd(Need.Date, Need."Starting Time", Need."Ending Time"), Cursor, FreeEnd, BusyEnd);
-            until Need.Next() = 0;
-        Allocation.SetRange(ScenarioCode, ScenarioCode);
-        Allocation.SetRange(WorkCenterNo, Draft.WorkCenterNo);
-        Allocation.SetRange(CapacityDate, Day);
-        Allocation.SetRange(Status, Allocation.Status::Planned, Allocation.Status::Released);
-        if Allocation.FindSet() then
-            repeat
-                ConsiderBusy(Allocation.StartDateTime, Allocation.EndDateTime, Cursor, FreeEnd, BusyEnd);
-            until Allocation.Next() = 0;
-    end;
-
-    local procedure ConsiderBusy(StartValue: DateTime; EndValue: DateTime; Cursor: DateTime; var FreeEnd: DateTime; var BusyEnd: DateTime)
-    begin
-        ScannedIntervals += 1;
-        if ScannedIntervals > 50000 then
-            Error(ScanErr);
-        if (StartValue = 0DT) or (EndValue <= StartValue) then
-            Error(CalendarErr);
-        if (StartValue <= Cursor) and (EndValue > BusyEnd) then
-            BusyEnd := EndValue
-        else
-            if (StartValue > Cursor) and (StartValue < FreeEnd) then
-                FreeEnd := StartValue;
-    end;
-
     procedure SetRequest(NewScenarioCode: Code[20]; OperationId: Text; NewVersion: Text; NewStart: DateTime; NewConfirmOnly: Boolean; NewAcceptedWarning: Text)
     begin
         ScenarioCode := NewScenarioCode;
@@ -275,14 +297,22 @@ codeunit 91308 CF_DraftScheduleChange
         ConfirmOnly := NewConfirmOnly;
         AcceptedWarning := NewAcceptedWarning;
         Automatic := false;
+        Replan := false;
+        BypassCapacity := false;
     end;
 
-    procedure SetAutomaticOptions(NewMethod: Enum CF_AutoScheduleMethod; FromDate: Date; ToDate: Date)
+    procedure SetReplan(Value: Boolean)
+    begin
+        Replan := Value;
+    end;
+
+    procedure SetAutomaticOptions(NewMethod: Enum CF_AutoScheduleMethod; FromDate: Date; ToDate: Date; NewBypassCapacity: Boolean)
     begin
         Automatic := true;
         Method := NewMethod;
         FirstDate := FromDate;
         LastDate := ToDate;
+        BypassCapacity := NewBypassCapacity;
     end;
 
     procedure ConfirmationPrefix(): Text
@@ -302,23 +332,27 @@ codeunit 91308 CF_DraftScheduleChange
 
     var
         Drafts: Codeunit CF_ScheduleDraftMgt;
+        Slots: Codeunit CF_DraftFiniteSlots;
         ScenarioCode: Code[20];
         OperationText: Text;
         ExpectedVersion: Text;
         RequestedStart: DateTime;
         ConfirmOnly: Boolean;
         Automatic: Boolean;
+        BypassCapacity: Boolean;
+        Replan: Boolean;
         Method: Enum CF_AutoScheduleMethod;
         FirstDate: Date;
         LastDate: Date;
         AcceptedWarning: Text;
         ChangedCount: Integer;
         ResultRevision: Integer;
-        ScannedIntervals: Integer;
+        ExcludedOperations: List of [Guid];
         DatesErr: Label 'This draft step needs valid dates and positive remaining capacity demand.';
+        PlanningChangedErr: Label 'Automatic scheduling settings changed after this batch was confirmed. No changes were saved for this chain. Refresh and retry.';
         HorizonErr: Label 'The selected step and following routing steps cannot fit within Maximum Schedule Days. No draft changes were saved.';
         DependencyErr: Label 'The routing dependency is missing, cyclic or inconsistent with the forward sequence. Review the routing in BC and reset this draft.';
         CalendarErr: Label 'Draft calculation requires non-overlapping positive calendar intervals, capacity of at least one, positive efficiency and valid allocation times.';
         OverloadErr: Label 'Draft capacity would be overloaded. No changes were saved.\%1', Comment = '%1 = overload report';
-        ScanErr: Label 'Finite draft scheduling exceeded 50,000 interval comparisons. Narrow the planning horizon.';
+        LockedErr: Label 'Operation %1 is fixed or position-locked and cannot move to satisfy this routing dependency. No draft changes were saved.', Comment = '%1 = operation number';
 }

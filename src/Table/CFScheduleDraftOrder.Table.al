@@ -16,6 +16,7 @@ table 91308 CF_ScheduleDraftOrder
         field(6; Changed; Boolean) { Caption = 'Uncommitted Changes'; }
         field(7; ImportedAt; DateTime) { Caption = 'Imported At'; }
         field(8; CommittedAt; DateTime) { Caption = 'Last Committed At'; }
+        field(9; CalendarBaseline; Blob) { Caption = 'Calendar Baseline'; }
     }
     keys { key(PK; ScenarioCode, Status, OrderNo) { Clustered = true; } }
 
@@ -36,6 +37,28 @@ table 91308 CF_ScheduleDraftOrder
     begin
         Clear(Baseline);
         Baseline.CreateOutStream(Stream, TextEncoding::UTF8);
+        Stream.WriteText(Value);
+    end;
+
+    procedure GetCalendarBaseline(): Text
+    var
+        Stream: InStream;
+        Value: Text;
+    begin
+        CalcFields(CalendarBaseline);
+        if not CalendarBaseline.HasValue() then
+            exit('');
+        CalendarBaseline.CreateInStream(Stream, TextEncoding::UTF8);
+        Stream.ReadText(Value);
+        exit(Value);
+    end;
+
+    procedure SetCalendarBaseline(Value: Text)
+    var
+        Stream: OutStream;
+    begin
+        Clear(CalendarBaseline);
+        CalendarBaseline.CreateOutStream(Stream, TextEncoding::UTF8);
         Stream.WriteText(Value);
     end;
 }

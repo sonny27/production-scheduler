@@ -937,3 +937,145 @@ The menu is viewport-clamped and keyboard navigable, returns focus on Escape, an
 - Regression coverage includes exclusive placement in all four views and document focus, authoritative top-to-bottom transfer, individual timeline requests, cancellation, read-only steps, and the absence of the AL success popup while preserving warnings/errors. Browser pointer-handler tests stub native pointer capture for synthetic events; real-device control-add-in dragging remains a BC sandbox check.
 - Validation: clean CodeCop/UICop build of **42 AL objects**, **52 Node tests** and syntax checks passed. All **nine browser helpers** passed at 1600x1200, 960x720 and 480x400 CSS pixels. A trusted browser mouse drag also emitted exactly one versioned start-change request without capture stubbing.
 - Package **2.0.1.0** is built, not published. Browser tests use a mocked AL bridge; native BC scheduling and modal behaviour still require sandbox verification.
+
+## 28. Civil-time drag validation fix (version 29.0.1.3)
+
+- Fixed AL civil-time serialization to replace space padding with zeroes, following the Base App's `Outlook Synch. Type Conv.` time-formatting pattern. Single-digit hours must serialize as `08:15:00`, not ` 8:15:00`; otherwise the strict input round-trip check rejects valid drag requests.
+- The shared formatter also serves operation dates, calendar windows and the current-time line. Midnight handling, strict date/time validation and BC session-wall-time semantics are unchanged.
+- Added a source-contract check for the AL formatter/validator and client drag tests for all 96 quarter-hour times in a day. These checks do not execute the AL runtime; verify morning, afternoon and midnight drops in a BC sandbox after installing the updated package.
+- Validation: all **54 Node tests** passed; **42 AL objects** compiled cleanly with CodeCop/UICop. Package **29.0.1.3** is built locally, not published.
+
+## 29. Compact scheduler window (version 29.0.1.4)
+
+- Moved the static draft/capacity explanation, time-zone instructions, colour legend and drag guidance into **Actions > How to Use Scheduler**. Routing links remain visible on the timeline; their textual counts remain available to screen readers without consuming timeline space. Actual errors, warnings and hidden-operation notices are retained.
+- **Schedule Options > Display Options** provides independent **Show Search**, **Show Display Range** and **Show Selected Step Details** switches. All default off when opening the scheduler and remain selected for that page session. These are display preferences, not company setup or changes to scheduling data.
+- Hiding search clears its text filter, including after restoring a document view. The empty unscheduled section collapses automatically; matching unscheduled steps remain visible at the top. The flex layout gives reclaimed space to the timeline.
+- Hover details, right-click actions, routing selection and Date View navigation remain usable with the optional panels hidden. Clipped-drag guidance now points to the always-available right-click Edit Draft Start action.
+- Validation: **56 Node tests**, JavaScript syntax checks and a clean CodeCop/UICop build of **42 AL objects** passed. All **ten browser helpers** passed at 1600x1200, 960x720 and 480x400 CSS pixels, covering all eight optional-panel combinations, default-off behaviour, clearing hidden search, empty-unscheduled collapse, retained warnings/errors and existing interactions. The empty compact timeline occupies at least 70% of the fixture window at each size.
+- Package **29.0.1.4** is built, not published. Browser tests use a mock bridge; native BC hosting and the Actions help/options dialogs still require sandbox verification.
+
+## 30. Daily utilisation fill (version 29.0.1.5)
+
+- Removed grey non-working-time/weekend and alternating capacity-strip backgrounds. Empty day cells and operation lanes stay white; resource hierarchy is retained with indentation, borders and bold department labels.
+- Loaded day cells show a muted grey fill from left to right, proportional to allocated minutes divided by available daily minutes: 80 of 100 fills 80%; exactly 100% fills the full cell. The fill covers both the capacity strip and the operation lane, behind operation bars, links and selection.
+- Overloaded days use a full light-red background, including positive demand with no available capacity. The existing 0.001-minute overload tolerance is preserved. Empty zero-capacity days stay white.
+- Fill represents aggregate daily utilisation, not a calendar interval or operation start time. It uses the same scenario-aware totals as the capacity figures, including competing/hidden demand; text search and problem visibility do not change it.
+- Direct work-centre lanes compare their direct load with the parent work-centre availability without creating a second capacity pool. Parent summary cells continue to include direct and machine demand. Tooltips explain this distinction; the Actions help legend describes the new colours.
+- Date alignment uses the existing shared axis in Hour/Day/Week/Month, including hidden-day compression. This is display-only; scheduling, working calendars and capacity calculations are unchanged.
+- Validation: **57 Node tests**, JavaScript syntax checks and a clean CodeCop/UICop build of **42 AL objects** passed. All **eleven browser helpers** passed at 1600x1200, 960x720 and 480x400 CSS pixels. Fill checks cover 0%, 80%, 100%, overload, zero-capacity demand, direct-lane parent availability, search independence and compressed-day alignment in all four views.
+- Package **29.0.1.5** is built locally, not published. Native BC hosting remains a sandbox verification step.
+
+## 31. Bottom-up utilisation fill (version 29.0.1.6)
+
+- Replaced the previous left-to-right fill with bottom-to-top fill, like water rising in a glass. At 80% utilisation the lower 80% of each loaded day box is grey and the upper 20% remains white.
+- Capacity strips and operation lanes use the same vertical fill. Empty cells remain white; overloads remain fully light red. Capacity calculations, operation positioning and interactions are unchanged.
+- Browser regression assertions now require the bottom-to-top gradient as well as the exact fill percentage.
+- Validation: **57 Node tests**, fixture syntax checks and the **42-object CodeCop/UICop build** passed. Bottom-up fill checks passed in all four views, including compressed days, at three viewport sizes. Package **29.0.1.6** is built locally, not published.
+
+## 32. Weekend display toggle (version 29.0.1.7)
+
+- Added **Date View > Hide Weekends / Show Weekends**, with weekends initially shown. Saturday and Sunday are hidden regardless of working capacity; the existing Hide Non-working Days filter applies independently. When both filters are enabled, only working weekdays remain.
+- Uses the shared compressed date axis for headers, capacity fill, operation bars, routing links, current-time markers and drag/drop in all four views. Weekend-only periods show an empty-calendar notice. Hidden operations/load are counted in a notice rather than being moved to the unscheduled section.
+- Display-only: no dates, calendars or capacity allocations change. The toggle is kept in the current page session and captured/restored with document-view state. Show Weekends does not disable Hide Non-working Days.
+- Zoom to Document temporarily shows all days, including weekends, so the complete routing is visible. Restore Previous View restores the previous weekend setting.
+- Validation: **59 Node tests**, JavaScript syntax checks and the **42-object CodeCop/UICop build** passed. All **twelve browser helpers** passed at three viewport sizes, including all four weekend/non-working-day combinations in every view, working weekends, restoring hidden operations, aligned capacity fill and weekend-only windows. Package **29.0.1.7** is built locally, not published; native BC action hosting remains a sandbox check.
+
+## 33. Straight timeline grid boundaries (version 29.0.1.8)
+
+- Replaced the per-lane repeating gradient with one full-height, pointer-transparent grid layer. Its bordered cells use exactly the same percentage positions, widths and right-border styling as the smallest date-header cells.
+- This removes independently rasterised gradient spacing/left-edge versus right-border offsets and gaps caused by rows taller than their capacity strip. Lines now span every resource row continuously, including department and direct-operation rows.
+- Removed separate capacity-cell borders so there is only one body grid, above utilisation shading and below operations/routing links. Day/hour alignment, scrolling, compressed dates and fitted views share the same axis; no scheduling data changes.
+- Validation: **60 Node tests**, JavaScript syntax checks and the **42-object CodeCop/UICop build** passed. All **thirteen browser helpers** passed at three viewport sizes. The new alignment helper checks **32 combinations per viewport** (four views, fitted/scrolling widths and both day filters), including horizontal scrolling, collapsed rows and varied resource-label heights. Header/body boundary coordinates agree within 0.1 CSS pixels.
+- Package **29.0.1.8** is built locally, not published. Native BC hosting remains a sandbox verification step.
+
+## 34. Non-obscuring operation hover details (version 29.0.1.9)
+
+- Tooltip placement now measures available space above and below its operation, chooses a side that fits (or the larger side), and limits the tooltip height to that space. Long details scroll within the tooltip instead of being clamped across the operation.
+- An eight-pixel gap keeps the operation visible and clickable. Existing tooltip hover persistence, scrolling, keyboard accessibility and pointer-down dismissal are retained.
+- Browser checks assert non-overlap, viewport containment and operation hit-testing with a long multi-line tooltip at top, middle and bottom positions.
+- Validation: **60 Node tests**, JavaScript syntax checks and the **42-object CodeCop/UICop build** passed. Focused hover, context-menu and individual-drag browser helpers passed at three viewport sizes. Package **29.0.1.9** is built locally, not published; native BC hosting remains a sandbox verification step.
+
+## 35. Optional working-only operation bars (version 29.0.1.10)
+
+- Added company setup **Exclude Non-working Hours**, off by default for both new and existing setups, preserving the existing elapsed-duration display. Enable it to draw each operation only where its assigned resource's positive-capacity calendar intersects the operation's draft start/finish.
+- Working portions remain at their actual dates with gaps between them: Friday 15:45–16:00 and Monday 08:00–08:04 render as two pieces of the same 19-working-minute operation. This does not pack time into one misleading continuous bar.
+- Overlapping/adjacent calendar windows are merged to avoid duplicate pieces. Each operation retains one layout track, identity, selection, context menu and draft-start request. Routing arrows connect the last visible piece to the first visible piece of the following step. Dragging a piece previews all pieces; cancellation restores all pieces.
+- Hour display windows, hidden weekends/non-working days and view clipping still apply. If no working portion is visible despite the operation's elapsed span being visible, show a small dashed marker with explicit hover guidance rather than fabricating a full-duration bar. Its manual/context actions remain available.
+- The display option is reloaded from setup on refresh; it does not change routing dates, work minutes, allocations, Auto Schedule or BC commit rules. No upgrade reset is needed because the Boolean defaults false.
+- Validation: **63 Node tests**, JavaScript syntax checks and the **42-object CodeCop/UICop build** passed. All **14 browser helpers** passed at 1600×1200, 960×720 and 480×400, including split endpoints, dragging/cancellation, missing-calendar guidance and existing interactions. Package **29.0.1.10** is built locally, not published. Setup persistence and control-add-in hosting still require verification in a BC sandbox.
+
+## 36. Continuous daily utilisation fill (version 29.0.1.11)
+
+- Fixed horizontal gaps in grey utilisation shading: the capacity-number strip and operation lane previously started separate bottom-up fills. Each resource/day now has one background spanning the entire resource box, with transparent foreground layers.
+- The single fill rises from the bottom according to daily utilisation, including rows enlarged by wrapped resource labels. Empty days remain white; overload remains full light red. Capacity figures, operation bars and interactions are unchanged.
+- Validation: **63 Node tests**, syntax checks and the **42-object CodeCop/UICop build** passed. Seven focused browser helpers passed at three viewport sizes, covering full-box fill at 20%, 50%, 80%, 100%, overload and zero capacity, tall labels, compressed dates, grid alignment, dragging, routing links and hover details. Package **29.0.1.11** is built locally, not published.
+
+## 37. Calm Blue date headers (version 29.0.1.12)
+
+- Applied the selected Calm Blue palette by date unit: month `#DCE7F4`, week `#ECF2F9`, day/hour `#F8FAFD`, with dark text `#263E59`. The fixed capacity heading uses the week tint.
+- Colours follow semantic units in all four views rather than header-row position. The white timeline, operation colours, grey utilisation fill and light-red overload display remain unchanged.
+- Validation: **63 Node tests**, fixture syntax check and the **42-object CodeCop/UICop build** passed. Browser checks verified exact header colours and layout in all four views and reran continuous utilisation-fill coverage. Package **29.0.1.12** is built locally, not published.
+
+## 38. Light-purple current-time line (version 29.0.1.13)
+
+- Changed the vertical current-time line to light purple `#B39DDB`, retaining its two-pixel width, position and pointer transparency. Warning colours and the current-time text are unchanged.
+- Validation: current-time browser checks passed in all four views, including exact line colour, live movement and hidden/out-of-range handling. Fixture syntax and the 42-object CodeCop/UICop build passed. Package **29.0.1.13** is built locally, not published.
+
+## 39. Single scheduler heading (version 29.0.1.14)
+
+- Removed the duplicate Production Scheduler heading inside the control add-in. The native BC page title remains; the scenario name and Hour/Day/Week/Month controls are retained. The timeline region keeps its accessible name.
+- Validation: compact-display and layout browser checks passed at desktop and small viewport sizes, including retained controls and accessible region name. JavaScript syntax checks and the 42-object CodeCop/UICop build passed. Package **29.0.1.14** is built locally, not published.
+
+## 40. Retaining the viewport after moves (version 29.0.1.15)
+
+- Fixed accepted draft moves resetting the timeline to the left: ordinary payload redraws now retain horizontal/vertical timeline scroll and the focused operation or board, without scrolling during focus restoration. Operation selection and routing links remain intact.
+- Preservation applies only within the same scenario, date range and time scale. Intentional date/view changes retain their existing reset behaviour; Zoom to Document and Restore Previous View retain their explicit state handling.
+- Validation: **63 Node tests**, JavaScript syntax checks and the **42-object CodeCop/UICop build** passed. Accepted-move viewport/focus, individual dragging, split working portions and date-view/restore browser regressions passed at three screen sizes. The viewport regression moves an operation while scrolled in both directions and checks its persisted selection, keyboard focus and visibility. Package **29.0.1.15** is built locally, not published; native BC hosting remains a sandbox verification step.
+
+## 41. Consistent sequencing, locks and scenario lifecycle (version 29.0.2.0)
+
+This section supersedes earlier descriptions of manual moves bypassing finite-slot search and always packing all successors together.
+
+### Opening and importing
+
+- Opening/refreshing displays saved scenario dates without silently importing or replanning. BC baseline conflicts and changed calculated calendars (including parent work-centre calendars for machine operations) are reported; draft dates are not overwritten. Older imports without calendar snapshots are explicitly reported as unverified until reset.
+- **Import Orders** copies current BC dates and allocations only for new matching orders; existing draft orders remain unchanged.
+- **Import and Auto Schedule** imports the same way, then offers scheduling only for the newly imported orders. Cancelling scheduling retains the imported BC dates.
+- Date/view/filter settings are remembered per company/scenario for the current BC session; client viewport state is independently scoped to the user/company/scenario and matching date window. This is not a permanent personal default across unrelated browser sessions.
+
+### Selection and locks
+
+- Ctrl+click toggles multiple operations. **Select Routing Chain**, **Select Following Steps** and **Clear Operation Selection** manage the set. Selection is by logical operation, including all visible working-time fragments.
+- **Lock Selected Positions** fixes valid scheduled, unfinished operations and their draft allocations. Lock state is separate from scheduling confirmation. **Unlock Selected Positions** permits replanning again. No group dragging is implied by multiple selection.
+- Locked operations are reservations, never silently shifted. A dependency conflict with a locked step rejects the entire affected chain; unlock explicitly before proceeding. Locks survive reopening and successful BC commit; explicit reset discards them.
+
+### Scheduling and saving
+
+- Manual moves and automatic scheduling use the configured calendar-only or finite-capacity policy. Required work is preserved and actual assigned resource calendars govern scheduling; Hour-view display windows do not change resource calendars.
+- Manual moves preserve existing successor positions when dependency constraints still fit. Moving earlier does not automatically close downstream gaps. An unlocked conflicting successor is pushed forward; a locked conflicting successor blocks the change.
+- Finite search respects assigned-resource concurrent capacity and the parent work-centre's effective daily work budget. Sibling machines are not blanket-blocked by each other's occupied intervals. Manual search reserves unchanged successors conservatively; it does not speculate that future reservations will be released, so some moves can finish later or fail rather than perform backtracking.
+- **Schedule Unscheduled** plans unscheduled routing chains around scheduled/locked reservations. **Replan Unlocked Operations** explicitly rebuilds unlocked work; locked work remains fixed.
+- Batch scheduling processes routing chains rather than repeatedly rescheduling each suffix for every operation. Priority is deterministic and failures are reported per chain; earlier successful chains remain saved.
+- Accepted changes save automatically to the shared draft, not BC. Saving/saved/error status is displayed. Existing version/baseline checks and atomic per-order BC commit verification remain required.
+- Automatic planning confirms its scope, mode and policy before applying and reports final dates, failures and late finishes afterward. This is not a date-by-date dry-run proposal preview; that separate simulation capability is not included in this release.
+- **Undo Last Draft Change** restores the last successful manual move/confirmation or lock change, including affected linked steps, in the current open scheduler. It validates expected order revisions, current BC baseline and calendars before restoring. Revisions continue increasing rather than resurrecting old client tokens. Import, reset, automatic planning and commit clear this page-session undo history.
+
+### Reset
+
+- **Reset Scheduler to BC Dates** affects every order already in the active scenario, including hidden/filtered orders. A confirmation states count, scope, lock removal and loss of draft changes.
+- Reset reimports current BC routing dates and allocations, clears locks, refreshes baselines, does not import unrelated new orders and never writes BC. All affected orders reset together or none do; missing/deleted/ineligible BC orders are explicit errors, not silently skipped.
+- Existing **Reset Order Draft from BC** remains available for a single order. Scenario-wide reset is deliberately not undoable.
+
+### Verification boundary
+
+- Validation: **78 Node tests** (including AL source-contract safeguards), JavaScript syntax checks and the **45-object CodeCop/UICop build** passed with no compiler errors or warnings. All **16 browser regression helpers** passed independently at 1600x1200, 960x720 and 480x400 CSS pixels, including multi-selection, lock requests/icons/edit guards, draft feedback, session restoration, accepted-drag viewport retention, split bars and existing capacity/date-view behaviour. Helpers are reloaded between runs to isolate intentionally retained selection/collapse state.
+- Package **29.0.2.0** is built locally, not published. No commit or push was performed.
+- Native manufacturing recalculation, contention, effective-capacity behaviour and BC-hosted control-add-in persistence require sandbox validation before deployment. JavaScript fixtures and AL source-contract tests are not native AL execution tests.
+
+## 42. Optional automatic capacity bypass (version 29.0.2.1)
+
+- Enable **Production Scheduler Setup > Automatic Scheduling > Auto Schedule Bypass Capacity** to ignore occupied resource slots and parent daily capacity budgets during automatic planning. Default is off for new and existing setups.
+- Applies to **Schedule Unscheduled**, **Replan Unlocked Operations** and **Import and Auto Schedule**. When enabled, automatic planning can save overlapping/overloaded draft operations even with the normal overload policy set to Block, without per-chain capacity prompts. The batch confirmation explicitly shows the bypass setting, and successful results identify that capacity checks were bypassed. Overload shading and capacity totals remain visible.
+- Assigned-resource and parent working calendars, positive available calendar capacity, required work, routing order, locked positions, baseline/version validation and Maximum Schedule Days remain enforced. This is not a way to schedule outside working calendars or bypass unsupported routing restrictions (such as concurrent operation capacities or queue/wait/move times).
+- Manual moves/confirmations and **Commit to BC** retain their normal capacity policy. An overloaded draft is not permission to commit overload or mismatched dates into BC. Changes to the method/bypass setting after batch confirmation reject the affected chain rather than silently changing policy.
+- Validation: **81 Node tests** (including three new bypass source-contract checks), whitespace checks and the **45-object CodeCop/UICop build** passed with no compiler errors or warnings. Package **29.0.2.1** is built locally, not published. Actual scheduling transactions still require BC sandbox validation.

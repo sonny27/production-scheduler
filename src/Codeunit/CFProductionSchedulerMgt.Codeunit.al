@@ -93,6 +93,7 @@ codeunit 91300 CF_ProductionSchedulerMgt
         else begin
             Scenario.Get(ScenarioCode);
             Drafts.AddOperations(ScenarioCode, Setup, StartDate, EndDate, WorkCenterFilter, OrderFilter, DocumentFocus, ResourceIds, TempProblemDays, Operations);
+            Drafts.AddScenarioWarnings(ScenarioCode, Warnings);
         end;
         if Resources.Count() = 0 then
             Warnings.Add(NoResourcesLbl);
@@ -109,7 +110,7 @@ codeunit 91300 CF_ProductionSchedulerMgt
         Payload.Add('scenarioName', Scenario.Description);
         Payload.Add('timeZone', TimeZoneLbl);
         Payload.Add('viewMode', ViewModeKey(Setup.DefaultViewMode));
-        Payload.Add('hourWindows', Setup.HourWindows());
+        Payload.Add('excludeNonWorkingHours', Setup.ExcludeNonWorkingHours);
         exit(Payload);
     end;
 
@@ -136,6 +137,7 @@ codeunit 91300 CF_ProductionSchedulerMgt
         Window: JsonObject;
         Days: JsonArray;
         Windows: JsonArray;
+        LoadWindows: JsonArray;
         Id: Text;
         Day: Date;
         Index: Integer;
@@ -186,6 +188,7 @@ codeunit 91300 CF_ProductionSchedulerMgt
                         Window.Add('end', CivilDateTime(Calendar.Date + 1, 0T))
                     else
                         Window.Add('end', CivilDateTime(Calendar.Date, Calendar."Ending Time"));
+                    Window.Add('minutes', Calendar."Capacity (Effective)" * MinuteFactor);
                     Windows.Add(Window);
                 end;
             until Calendar.Next() = 0;
@@ -206,8 +209,11 @@ codeunit 91300 CF_ProductionSchedulerMgt
                 NeedCount += 1;
                 if NeedCount > 50000 then
                     Error(DisplayNeedsLimitErr, ResourceNo);
-                if not Drafts.ReplacesNeed(ScenarioCode, Need) then
+                if not Drafts.ReplacesNeed(ScenarioCode, Need) then begin
                     AccumulateMinutes(AllocatedByDate, Need.Date, Need."Allocated Time" * MinuteFactor);
+                    AddLoadWindow(LoadWindows, CreateDateTime(Need.Date, Need."Starting Time"),
+                        IntervalEnd(Need.Date, Need."Starting Time", Need."Ending Time"), Need."Allocated Time" * MinuteFactor);
+                end;
             until Need.Next() = 0;
         if ScenarioCode <> '' then begin
             Drafts.FilterAllocations(Allocation, ScenarioCode, ResourceType, ResourceNo, IsDirect);
@@ -218,6 +224,7 @@ codeunit 91300 CF_ProductionSchedulerMgt
                     if NeedCount > 50000 then
                         Error(DisplayNeedsLimitErr, ResourceNo);
                     AccumulateMinutes(AllocatedByDate, Allocation.CapacityDate, Allocation.Minutes);
+                    AddLoadWindow(LoadWindows, Allocation.StartDateTime, Allocation.EndDateTime, Allocation.Minutes);
                 until Allocation.Next() = 0;
         end;
         for Index := 0 to ViewDays - 1 do begin
@@ -244,7 +251,27 @@ codeunit 91300 CF_ProductionSchedulerMgt
             Days.Add(Cell);
         end;
         Resource.Add('days', Days);
+        Resource.Add('loadWindows', LoadWindows);
         Resources.Add(Resource);
+    end;
+
+    local procedure IntervalEnd(ValueDate: Date; StartTime: Time; EndTime: Time): DateTime
+    begin
+        if (EndTime = 0T) and (StartTime <> 0T) then
+            exit(CreateDateTime(ValueDate + 1, 0T));
+        exit(CreateDateTime(ValueDate, EndTime));
+    end;
+
+    local procedure AddLoadWindow(var Windows: JsonArray; StartDateTime: DateTime; EndDateTime: DateTime; Minutes: Decimal)
+    var
+        Window: JsonObject;
+    begin
+        if Minutes = 0 then
+            exit;
+        Window.Add('start', CivilDateTime(DT2Date(StartDateTime), DT2Time(StartDateTime)));
+        Window.Add('end', CivilDateTime(DT2Date(EndDateTime), DT2Time(EndDateTime)));
+        Window.Add('minutes', Minutes);
+        Windows.Add(Window);
     end;
 
     local procedure AccumulateMinutes(var Totals: Dictionary of [Date, Decimal]; CapacityDate: Date; Value: Decimal)
@@ -521,13 +548,18 @@ codeunit 91300 CF_ProductionSchedulerMgt
         exit(CivilDateTime(DT2Date(CurrentInstant), DT2Time(CurrentInstant)));
     end;
 
+    procedure ShowHelp()
+    begin
+        Message(HelpLbl + '\\' + WorkingDisplayHelpLbl + '\\' + SelectionHelpLbl, ScopeLbl, TimeZoneLbl, LegendLbl, DropHelpLbl);
+    end;
+
     procedure CivilDateTime(ValueDate: Date; ValueTime: Time): Text
     begin
         if ValueDate = 0D then
             exit('');
         if ValueTime = 0T then
             exit(Format(ValueDate, 0, 9) + 'T00:00:00');
-        exit(Format(ValueDate, 0, 9) + 'T' + Format(ValueTime, 0, '<Hours24,2>:<Minutes,2>:<Seconds,2>'));
+        exit(Format(ValueDate, 0, 9) + 'T' + ConvertStr(Format(ValueTime, 0, '<Hours24,2>:<Minutes,2>:<Seconds,2>'), ' ', '0'));
     end;
 
     procedure ParseCivilDateTime(Value: Text): DateTime
@@ -629,6 +661,7 @@ codeunit 91300 CF_ProductionSchedulerMgt
         Result.Add('finished', Format(Routing."Routing Status"::Finished));
         Result.Add('routingScope', RoutingScopeLbl);
         Result.Add('routingUnscheduled', RoutingUnscheduledLbl);
+        Result.Add('unscheduled', UnscheduledLbl);
         Result.Add('dropHelp', DropHelpLbl);
         Result.Add('dropInvalid', DropInvalidLbl);
         Result.Add('nonWorkingScope', NonWorkingScopeLbl);
@@ -642,6 +675,7 @@ codeunit 91300 CF_ProductionSchedulerMgt
         Result.Add('schedule', ScheduleLbl);
         Result.Add('confirm', ConfirmLbl);
         Result.Add('order', OrderLbl);
+        Result.Add('openBCRouting', OpenBCRoutingLbl);
         Result.Add('routing', RoutingLbl);
         Result.Add('draftDetails', RoutingLbl);
         Result.Add('editDraft', EditDraftLbl);
@@ -662,10 +696,13 @@ codeunit 91300 CF_ProductionSchedulerMgt
         Result.Add('busy', BusyLbl);
         Result.Add('failed', FailedLbl);
         Result.Add('capacity', CapacityLbl);
+        Result.Add('noCapacity', NoCapacityLbl);
         Result.Add('missingCalendar', MissingCalendarLbl);
         Result.Add('blocked', BlockedLbl);
         Result.Add('direct', DirectCapacityLbl);
         Result.Add('legend', LegendLbl);
+        Result.Add('noWorkingPortion', NoWorkingPortionLbl);
+        Result.Add('hiddenDaysScope', HiddenDaysScopeLbl);
         Result.Add('problem', ProblemLbl);
         Result.Add('problemScope', ProblemScopeLbl);
         Result.Add('minutes', MinutesLbl);
@@ -678,11 +715,34 @@ codeunit 91300 CF_ProductionSchedulerMgt
         Result.Add('confirmed', ConfirmedLbl);
         Result.Add('invalidDate', DateTimeErr);
         Result.Add('search', SearchLbl);
+        Result.Add('selectionToolbar', SelectionToolbarLbl);
+        Result.Add('selectedCount', SelectedCountLbl);
+        Result.Add('selectChain', SelectChainLbl);
+        Result.Add('selectFollowing', SelectFollowingLbl);
+        Result.Add('clearSelection', ClearSelectionLbl);
+        Result.Add('lockSelected', LockSelectedLbl);
+        Result.Add('unlockSelected', UnlockSelectedLbl);
+        Result.Add('lockStep', LockStepLbl);
+        Result.Add('unlockStep', UnlockStepLbl);
+        Result.Add('positionLocked', PositionLockedLbl);
+        Result.Add('lockedNoEdit', LockedNoEditLbl);
+        Result.Add('noSelection', NoSelectionLbl);
+        Result.Add('noLockChange', NoLockChangeLbl);
+        Result.Add('selectionUnavailable', SelectionUnavailableLbl);
+        Result.Add('invalidSelectionCommand', InvalidSelectionCommandLbl);
+        Result.Add('saving', SavingLbl);
+        Result.Add('saved', SavedLbl);
+        Result.Add('saveFailed', SaveFailedLbl);
+        Result.Add('viewStateFailed', ViewStateFailedLbl);
         exit(Result);
     end;
 
     var
         ScenarioCode: Code[20];
+        NoWorkingPortionLbl: Label 'No working-calendar portion of this operation is visible. This marker is not its duration. Check resource calendars, dates and display filters, or disable Exclude Non-working Hours in setup.';
+        WorkingDisplayHelpLbl: Label 'Operation bars include elapsed non-working hours by default. Enable Exclude Non-working Hours in Production Scheduler Setup and refresh to show separate working-calendar portions with gaps. Selecting or dragging any piece refers to the same draft operation. A small dashed red marker means no working portion is visible; hover for guidance. This option changes display only, not routing dates or required capacity.';
+        HiddenDaysScopeLbl: Label '%1 days hidden by weekend or non-working-day filters. %2 matching operations fall entirely on hidden days. %3 hidden days contain allocated capacity. Use Date View > Show Weekends and, if enabled, Show All Days to inspect them. Scheduling and capacity are unchanged.', Comment = '%1 = hidden days, %2 = operations, %3 = hidden days with load; substituted in the control';
+        HelpLbl: Label '%1\\%2\\%3\\%4\\Right-click a step for Schedule Details, Edit Draft Start, Zoom to Document, Reset Order Draft from BC, Commit This Order to BC, Open Production Order or Open BC Routing. Open BC Routing opens the standard routing for that operation''s production order and routing reference. Some actions depend on permissions and step eligibility.\\Search, the bottom display-range slider and selected-step details are hidden by default. Enable them under Schedule Options > Display Options. Hiding search clears its text filter. Date View actions remain available without the slider. Unscheduled rows appear under work centres when matching steps exist; use Hide Unscheduled to hide them. Overlapping operation bars stack vertically and rows expand automatically, including short minimum-width bars in overview views. Stacking changes only the display, not dates or capacity.\\Click a scheduled step to highlight its routing links. Links to steps outside the visible dates, filters or expanded resource rows are not drawn.\\Use Auto Schedule to plan eligible unscheduled steps in this scenario. In Auto Schedule Results, Override and Save to Draft keeps an unchanged imported order''s existing dates and allocations and marks its unfinished steps scheduled, after confirming capacity overload including competing orders. Invalid demand and stale drafts cannot be overridden. Unsupported routing remains protected from recalculation and BC commit. Use Commit Entire Schedule to BC to apply all changed orders, including hidden orders; review the per-order results.', Comment = '%1 = draft scope, %2 = time zone, %3 = colour legend, %4 = drag instructions';
         SelectScenarioLbl: Label 'Choose or create a scenario, then use Import Orders to copy the orders matching Schedule Options. BC is not changed until Commit to BC.';
         EditDraftLbl: Label 'Edit Draft Start';
         ZoomDocumentLbl: Label 'Zoom to Document';
@@ -716,10 +776,12 @@ codeunit 91300 CF_ProductionSchedulerMgt
         TitleLbl: Label 'Production Scheduler';
         CurrentTimeLbl: Label 'Current time';
         UnconfirmedLbl: Label 'Unscheduled / awaiting planner confirmation';
+        UnscheduledLbl: Label 'Unscheduled';
         EmptyLbl: Label 'No operations in this view.';
         ScheduleLbl: Label 'Save draft start';
         ConfirmLbl: Label 'Schedule existing draft dates';
         OrderLbl: Label 'Open production order';
+        OpenBCRoutingLbl: Label 'Open BC Routing';
         RoutingLbl: Label 'Schedule Details';
         StartLbl: Label 'Start';
         EndLbl: Label 'Finish';
@@ -727,16 +789,17 @@ codeunit 91300 CF_ProductionSchedulerMgt
         DayLbl: Label 'Day';
         WeekLbl: Label 'Week';
         HourLbl: Label 'Hour';
-        HourScopeLbl: Label 'Hour view hides times outside the configured daily display windows. Capacity totals still cover the whole day. %1 matching operations fall entirely outside these hours; use Day view to see them.', Comment = '%1 = number of operations, substituted in the control';
-        HourDragRangeLbl: Label 'Drop within the displayed hours, or enter the start manually in the operation details.';
-        HourClippedStartLbl: Label 'The actual start is outside the displayed hours. Use Schedule start in the details instead of dragging this clipped bar.';
+        HourScopeLbl: Label 'Hour view shows the full day. Light-blue intervals are non-working hours. Days without working calendar capacity are pale blue on weekends and near-white on weekdays.';
+        HourDragRangeLbl: Label 'Drop within the visible timeline, or right-click the step and choose Edit Draft Start.';
+        HourClippedStartLbl: Label 'The actual start is outside the visible timeline. Right-click and choose Edit Draft Start instead of dragging this clipped bar.';
         MonthLbl: Label 'Month';
         BusyLbl: Label 'Working...';
         FailedLbl: Label 'The request failed. The displayed dates have not been accepted. Refresh before retrying.';
         CapacityLbl: Label 'Daily capacity in hours: allocated / available';
+        NoCapacityLbl: Label 'No capacity';
         MissingCalendarLbl: Label 'No calculated calendar entries in this window. Calculate the resource calendar in Business Central.';
-        DirectCapacityLbl: Label 'Direct load only; uses the work-centre capacity above, not an additional capacity pool.';
-        LegendLbl: Label 'Top: unscheduled steps. Timeline: scheduled or finished steps. Red border: scheduling problem. Red capacity: overloaded. Grey: non-working. Parent totals already include child load.';
+        DirectCapacityLbl: Label 'Direct load only; fill compares direct demand with the parent work-centre capacity, not an additional capacity pool. Parent totals include both direct and machine demand.';
+        LegendLbl: Label 'Unscheduled steps appear under each work centre; their base width represents work duration. Days without working calendar capacity are pale blue on weekends and near-white on weekdays in every view; missing calendars remain unshaded. Hour view shows partial non-working hours in light blue. Red operation border: scheduling problem. Bottom meters show utilisation: muted green below 100%, solid light red at 100%, red stripes above 100% or for load without capacity. Hover an hour in the capacity strip for its percentage and allocated/available minutes; Hour view has no visible percentage labels. Other views show percentages at the top. No capacity means a percentage cannot be calculated. Hour view uses timed allocations and effective calendar capacity for each hour; other views use daily totals. Narrow Month and fitted overview cells omit percentage text; hover daily totals for details. Parent totals already include child load. Competing BC orders are included; search and problem filters do not change capacity meters.';
         ProblemLbl: Label 'Scheduling problem';
         ProblemScopeLbl: Label '%1 problem steps are hidden. Capacity totals and Auto Schedule still include their load and eligible operations. Enable Include Problem Steps in Schedule Options to show them.', Comment = '%1 = hidden problem count';
         PastDueLbl: Label 'The production order finishes after its due date.';
@@ -757,7 +820,27 @@ codeunit 91300 CF_ProductionSchedulerMgt
         DropHelpLbl: Label 'Drag an unscheduled step onto its assigned resource row to schedule it. Drag an individual timeline step horizontally to adjust its draft start. Click a step to highlight its routing links.';
         DropInvalidLbl: Label 'Drop an editable unplanned step onto its assigned resource row within the displayed dates and hours. Resource reassignment is not supported.';
         NonWorkingScopeLbl: Label '%1 non-working days hidden. %2 matching operations fall entirely on hidden days. %3 hidden days still contain allocated capacity. Use Show All Days to inspect them. Scheduling and daily capacity values are unchanged.', Comment = '%1 = hidden days, %2 = operations, %3 = hidden days with load; substituted in the control';
-        NoWorkingDaysLbl: Label 'No working days in this date range for the current resource scope. Use Show All Days or change Schedule Options. Check that resource calendars have been calculated.';
-        HiddenClippedStartLbl: Label 'The actual start is outside the visible periods. Use Schedule start in the details instead of dragging this clipped bar.';
-        HiddenDragRangeLbl: Label 'Drop within the visible dates and hours, or enter the start manually in the operation details.';
+        NoWorkingDaysLbl: Label 'No visible days in this date range. Use Date View > Show Weekends, Show All Days or change Schedule Options. Check resource calendars if non-working days are hidden.';
+        HiddenClippedStartLbl: Label 'The actual start is outside the visible periods. Right-click and choose Edit Draft Start instead of dragging this clipped bar.';
+        HiddenDragRangeLbl: Label 'Drop within the visible dates and hours, or right-click the step and choose Edit Draft Start.';
+        SelectionHelpLbl: Label 'Ctrl+click (Cmd+click on Mac) steps to add or remove them from the selection. The last clicked step is shown in the details. Use Select Routing Chain or Select Following Steps to select related steps of the same production order routing, then Lock Selected or Unlock Selected. Locked steps show a lock icon, cannot be dragged or edited manually and keep their draft position. Right-click a step to lock or unlock it. Dragging always moves one step only.';
+        SelectionToolbarLbl: Label 'Step selection';
+        SelectedCountLbl: Label '%1 selected', Comment = '%1 = number of selected steps, substituted in the control';
+        SelectChainLbl: Label 'Select Routing Chain';
+        SelectFollowingLbl: Label 'Select Following Steps';
+        ClearSelectionLbl: Label 'Clear Selection';
+        LockSelectedLbl: Label 'Lock Selected';
+        UnlockSelectedLbl: Label 'Unlock Selected';
+        LockStepLbl: Label 'Lock Position';
+        UnlockStepLbl: Label 'Unlock Position';
+        PositionLockedLbl: Label 'Position locked';
+        LockedNoEditLbl: Label 'This step''s position is locked. Unlock it before dragging or editing its start.';
+        NoSelectionLbl: Label 'Select at least one step first. Click a step, or Ctrl+click to select several.';
+        NoLockChangeLbl: Label 'The selected steps already have this lock state. Nothing was changed.';
+        SelectionUnavailableLbl: Label 'Selection actions are unavailable while the scheduler is busy or must be refreshed.';
+        InvalidSelectionCommandLbl: Label 'Unsupported selection command.';
+        SavingLbl: Label 'Saving draft...';
+        SavedLbl: Label 'Draft saved.';
+        SaveFailedLbl: Label 'The draft change was not saved. Refresh before retrying.';
+        ViewStateFailedLbl: Label 'The scroll position and selection could not be remembered for this session. The schedule is unaffected.';
 }

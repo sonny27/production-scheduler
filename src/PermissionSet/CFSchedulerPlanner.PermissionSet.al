@@ -17,6 +17,8 @@ permissionset 91301 CF_SchedulerPlanner
         table "Capacity Constrained Resource" = X,
         page CF_ProductionSchedulerSetup = X,
         codeunit CF_DraftScheduleChange = X,
+        codeunit CF_SchedulerDraftActions = X,
+        codeunit CF_DraftFiniteSlots = X,
         page CF_EditDraftStart = X,
         codeunit CF_AutoSchedule = X,
         codeunit CF_SchedulerFiniteScope = X,

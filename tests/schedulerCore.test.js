@@ -14,6 +14,259 @@ const routingOperation = (id, values = {}) => ({
 
 const alSource = (folder, file) => fs.readFileSync(path.join(__dirname, "..", "src", folder, file), "utf8");
 
+test("Open BC Routing context action reuses the standard order routing navigation", () => {
+    const page = alSource("Page", "CFProductionScheduler.Page.al");
+    const mgt = alSource("Codeunit", "CFProductionSchedulerMgt.Codeunit.al");
+    assert.ok(page.includes("'bcRouting': Mgt.OpenOperation(OperationId, true);"));
+    assert.ok(mgt.includes("Result.Add('openBCRouting', OpenBCRoutingLbl)"));
+    assert.ok(mgt.includes("OpenBCRoutingLbl: Label 'Open BC Routing'"));
+    assert.ok(mgt.includes('Routing.SetRange("Prod. Order No.", Routing."Prod. Order No.")'));
+    assert.ok(mgt.includes('Routing.SetRange("Routing Reference No.", Routing."Routing Reference No.")'));
+    assert.ok(mgt.includes('Page.Run(Page::"Prod. Order Routing", Routing)'));
+});
+
+test("hourly capacity distributes actual timed allocations, not daily averages", () => {
+    const start = core.parseCivil("2026-11-03T00:00:00");
+    const axis = core.timeAxis("hour", start, start + core.day);
+    const calendar = [{ start: "2026-11-03T08:00:00", end: "2026-11-03T16:00:00", minutes: 480 }];
+    const loads = [
+        { start: "2026-11-03T08:30:00", end: "2026-11-03T09:30:00", minutes: 60 },
+        { start: "2026-11-03T09:00:00", end: "2026-11-03T10:00:00", minutes: 60 }
+    ];
+    const before = JSON.stringify([calendar, loads]);
+    const cells = core.hourlyCapacity(axis, calendar, loads);
+    assert.equal(cells.length, 24);
+    assert.equal(cells[8].allocated, 30);
+    assert.equal(cells[9].allocated, 90);
+    assert.equal(cells[10].allocated, 0);
+    assert.equal(cells[8].available, 60);
+    assert.equal(core.capacityFill(cells[8].available, cells[8].allocated).percent, 50);
+    assert.equal(core.capacityFill(cells[9].available, cells[9].allocated).overloaded, true);
+    assert.equal(cells.reduce((sum, cell) => sum + cell.allocated, 0), 120);
+    assert.equal(JSON.stringify([calendar, loads]), before);
+});
+
+test("hourly capacity respects calendar efficiency, midnight and hidden dates", () => {
+    const start = core.parseCivil("2026-11-03T00:00:00");
+    const axis = core.timeAxis("hour", start, start + 3 * core.day, undefined, ["2026-11-03", "2026-11-05"]);
+    const calendar = [{ start: "2026-11-03T23:30:00", end: "2026-11-04T00:30:00", minutes: 120 }];
+    const loads = [{ start: "2026-11-03T23:45:00", end: "2026-11-04T00:15:00", minutes: 30 },
+        { start: "2026-11-05T06:00:00", end: "2026-11-05T07:00:00", minutes: 60 }];
+    const cells = core.hourlyCapacity(axis, calendar, loads);
+    assert.equal(cells[23].available, 60);
+    assert.equal(cells[23].allocated, 15);
+    assert.equal(cells[30].available, 0);
+    assert.equal(cells[30].allocated, 60);
+    assert.equal(core.capacityFill(cells[30].available, cells[30].allocated).overloaded, true);
+    assert.throws(() => core.hourlyCapacity(axis, [{...calendar[0], minutes: undefined}], loads), RangeError);
+    assert.throws(() => core.hourlyCapacity(axis, calendar, undefined), TypeError);
+});
+
+test("hourly payload uses committed and scenario allocation intervals without display filters", () => {
+    const source = alSource("Codeunit", "CFProductionSchedulerMgt.Codeunit.al");
+    assert.ok(source.includes("Resource.Add('loadWindows', LoadWindows)"));
+    assert.ok(source.includes('IntervalEnd(Need.Date, Need."Starting Time", Need."Ending Time")'));
+    assert.ok(source.includes("AddLoadWindow(LoadWindows, Allocation.StartDateTime, Allocation.EndDateTime"));
+    assert.ok(source.includes("Window.Add('minutes', Calendar.\"Capacity (Effective)\" * MinuteFactor)"));
+    assert.ok(source.includes("if not Drafts.ReplacesNeed(ScenarioCode, Need) then begin"));
+});
+
+test("operation duration includes non-working hours by default and setup controls rendering only", () => {
+    const setup = alSource("Table", "CFProductionSchedulerSetup.Table.al");
+    const page = alSource("Page", "CFProductionSchedulerSetup.Page.al");
+    const mgt = alSource("Codeunit", "CFProductionSchedulerMgt.Codeunit.al");
+    const upgrade = alSource("Codeunit", "CFSchedulerUpgrade.Codeunit.al");
+    assert.ok(setup.includes("field(27; ExcludeNonWorkingHours; Boolean)"));
+    assert.doesNotMatch(setup, /ExcludeNonWorkingHours := true/);
+    assert.ok(page.includes("field(ExcludeNonWorkingHours; Rec.ExcludeNonWorkingHours)"));
+    assert.ok(mgt.includes("Payload.Add('excludeNonWorkingHours', Setup.ExcludeNonWorkingHours)"));
+    assert.doesNotMatch(page, /HourViewTimes|Hour View Display Times/);
+    assert.doesNotMatch(mgt, /Payload\.Add\('hourWindows'/);
+    assert.doesNotMatch(upgrade, /InitialiseHourlyDefaults/);
+    assert.doesNotMatch(alSource("Codeunit", "CFDraftScheduleChange.Codeunit.al"), /ExcludeNonWorkingHours/);
+});
+
+test("working-only bars split Friday to Monday into actual 15-minute and 4-minute portions", () => {
+    const start = core.parseCivil("2027-10-01T00:00:00");
+    const end = core.parseCivil("2027-10-05T00:00:00");
+    const item = {id: "a", start: "2027-10-01T15:45:00", end: "2027-10-04T08:04:00"};
+    const before = structuredClone(item);
+    const windows = [
+        {start: "2027-10-04T08:00:00", end: "2027-10-04T16:00:00"},
+        {start: "2027-10-01T08:00:00", end: "2027-10-01T16:00:00"}
+    ];
+    for (const view of ["hour", "day", "week", "month"]) {
+        for (const hideWeekends of [false, true]) {
+            const axis = core.timeAxis(view, start, end, defaultHourWindows,
+                core.visibleDates([], start, end, false, hideWeekends));
+            const full = core.layout([item], start, end, axis);
+            assert.equal(full.length, 1);
+            const split = core.layout([item], start, end, axis, windows);
+            assert.equal(split.length, 2);
+            assert.deepEqual(split.map(part => (part.segmentEnd - part.segmentStart) / core.minute), [15, 4]);
+            assert.ok(split.every(part => part.track === 0 && part.item === item));
+            assert.ok(Math.abs(split.reduce((total, part) => total + part.width, 0) - 19 * core.minute / axis.duration * 100) < 0.000001);
+        }
+    }
+    assert.deepEqual(item, before);
+    const after = {...item, start: "2027-10-04T08:00:00", end: "2027-10-04T08:19:00"};
+    const afterParts = core.layout([after], start, end, undefined, windows);
+    assert.equal(afterParts.length, 1);
+    assert.equal((afterParts[0].segmentEnd - afterParts[0].segmentStart) / core.minute, 19);
+});
+
+test("working-only layout merges overlapping calendars, clips views and retains missing-calendar markers", () => {
+    const start = core.parseCivil("2026-11-03T00:00:00");
+    const end = start + core.day;
+    const item = {id: "a", start: "2026-11-03T07:00:00", end: "2026-11-03T18:00:00"};
+    const windows = [
+        {start: "2026-11-03T08:00:00", end: "2026-11-03T12:00:00"},
+        {start: "2026-11-03T10:00:00", end: "2026-11-03T13:00:00"},
+        {start: "2026-11-03T13:00:00", end: "2026-11-03T14:00:00"},
+        {start: "2026-11-03T15:00:00", end: "2026-11-03T16:00:00"}
+    ];
+    const parts = core.layout([item], start, end, undefined, windows);
+    assert.deepEqual(parts.map(part => (part.segmentEnd - part.segmentStart) / core.minute), [360, 60]);
+    assert.ok(core.layout([item, {...item, id: "b"}], start, end, undefined, windows)
+        .every(part => part.track === (part.item.id === "a" ? 0 : 1)));
+    const marker = core.layout([item], start, end, undefined, []);
+    assert.equal(marker[0].noWorkingPortion, true);
+    assert.equal(marker[0].width, 0);
+    const clipped = core.layout([item], start + 11 * 60 * core.minute, start + 16 * 60 * core.minute, undefined, windows);
+    assert.equal(clipped.length, 2);
+    assert.throws(() => core.layout([item], start, end, undefined, [{start: "bad", end: item.end}]), RangeError);
+});
+
+test("vertical grid boundaries use one full-height layer and the header tick geometry", () => {
+    const source = alSource("ControlAddIn", "scheduler.js");
+    const css = alSource("ControlAddIn", "scheduler.css");
+    assert.ok(source.includes('const gridLines = element("div", "cf-grid-lines")'));
+    assert.ok(source.includes("for (const tick of axis.ticks)"));
+    assert.ok(source.includes('cell.style.left = tick.left / axis.width * 100 + "%"'));
+    assert.ok(source.includes('cell.style.width = tick.width / axis.width * 100 + "%"'));
+    assert.doesNotMatch(source, /--cf-grid-lines|repeating-linear-gradient/);
+    assert.doesNotMatch(css, /\.cf-lane::after/);
+});
+
+test("weekend visibility excludes Saturday and Sunday independently of resource calendars", () => {
+    const start = core.parseCivil("2026-11-06T00:00:00");
+    const end = start + 4 * core.day;
+    const resources = [{days: [
+        {date: "2026-11-06", available: 480, allocated: 0},
+        {date: "2026-11-07", available: 480, allocated: 60},
+        {date: "2026-11-08", available: 480, allocated: 60},
+        {date: "2026-11-09", available: 0, allocated: 0}
+    ]}];
+    const before = structuredClone(resources);
+    assert.equal(core.visibleDates(resources, start, end, false, false), undefined);
+    assert.deepEqual(core.visibleDates(resources, start, end, false, true), ["2026-11-06", "2026-11-09"]);
+    assert.deepEqual(core.visibleDates(resources, start, end, true, false), ["2026-11-06", "2026-11-07", "2026-11-08"]);
+    assert.deepEqual(core.visibleDates(resources, start, end, true, true), ["2026-11-06"]);
+    assert.deepEqual(core.visibleDates(resources, start + core.day, end - core.day, false, true), []);
+    for (const view of ["hour", "day", "week", "month"]) {
+        const axis = core.timeAxis(view, start, end, defaultHourWindows, core.visibleDates(resources, start, end, false, true));
+        assert.equal(axis.days.length, 2);
+        assert.equal(core.axisClip(axis, start + core.day, start + 2 * core.day), null);
+    }
+    assert.deepEqual(resources, before);
+});
+
+test("Date View weekend actions preserve state and keep non-working-day filtering independent", () => {
+    const page = alSource("Page", "CFProductionScheduler.Page.al");
+    const promoted = page.slice(page.indexOf("group(DateView)"), page.indexOf("trigger OnOpenPage()"));
+    assert.ok(promoted.includes("actionref(HideWeekendsPromoted; HideWeekends)"));
+    assert.ok(promoted.includes("actionref(ShowWeekendsPromoted; ShowWeekends)"));
+    assert.ok(page.includes("Payload.Add('hideWeekends', WeekendsHidden)"));
+    assert.ok(page.includes("State.HideWeekends := WeekendsHidden"));
+    assert.ok(page.includes("WeekendsHidden := State.HideWeekends"));
+});
+
+test("unscheduled work is grouped by work centre with promoted hide and show actions", () => {
+    const page = alSource("Page", "CFProductionScheduler.Page.al");
+    const draft = alSource("Codeunit", "CFScheduleDraftMgt.Codeunit.al");
+    const state = alSource("Table", "CFSchedulerViewState.Table.al");
+    assert.ok(draft.includes("Item.Add('workCenter', 'W:' + Draft.WorkCenterNo)"));
+    assert.ok(draft.includes("Item.Add('workMinutes', Draft.WorkMinutes)"));
+    assert.ok(page.includes("action(HideUnscheduled)"));
+    assert.ok(page.includes("action(ShowUnscheduled)"));
+    assert.ok(page.includes("actionref(HideUnscheduledPromoted; HideUnscheduled)"));
+    assert.ok(page.includes("actionref(ShowUnscheduledPromoted; ShowUnscheduled)"));
+    assert.ok(page.includes("Payload.Add('hideUnscheduled', UnscheduledHidden)"));
+    assert.ok(page.includes("State.HideUnscheduled := UnscheduledHidden"));
+    assert.ok(state.includes("field(26; HideUnscheduled; Boolean)"));
+});
+
+test("daily capacity fill is proportional, bounded and blank without allocated demand", () => {
+    for (const [available, allocated, percent, loaded, overloaded] of [
+        [100, 0, 0, false, false],
+        [100, 20, 20, true, false],
+        [100, 80, 80, true, false],
+        [100, 100, 100, true, false],
+        [100, 125, 100, true, true],
+        [0, 0, 0, false, false],
+        [0, 10, 100, true, true],
+        [480, 384, 80, true, false]
+    ]) {
+        assert.deepEqual(core.capacityFill(available, allocated), {percent, loaded, overloaded});
+    }
+    assert.throws(() => core.capacityFill(NaN, 10), TypeError);
+    assert.throws(() => core.capacityFill(100, Infinity), TypeError);
+});
+
+test("Unscheduled row caption is localized with an initial capital and italic styling", () => {
+    const source = alSource("Codeunit", "CFProductionSchedulerMgt.Codeunit.al");
+    assert.ok(source.includes("Result.Add('unscheduled', UnscheduledLbl)"));
+    assert.ok(source.includes("UnscheduledLbl: Label 'Unscheduled'"));
+    assert.match(fs.readFileSync(path.join(__dirname, "..", "src", "ControlAddIn", "scheduler.css"), "utf8"),
+        /\.cf-unscheduled-row \.cf-resource-name \{ font-style: italic; \}/);
+});
+
+test("optional scheduler panels default off and have round-tripped session display options", () => {
+    const page = alSource("Page", "CFProductionScheduler.Page.al");
+    const options = alSource("Page", "CFSchedulerOptions.Page.al");
+    for (const [field, key] of [["ShowSearch", "showSearch"], ["ShowDisplayRange", "showDisplayRange"], ["ShowStepDetails", "showStepDetails"]]) {
+        assert.ok(page.includes(`Payload.Add('${key}', ${field})`));
+        assert.ok(options.includes(`field(${field}; ${field})`));
+        assert.doesNotMatch(page, new RegExp(`${field} := true`));
+        assert.ok(options.includes(`${field}: Boolean`));
+    }
+    assert.ok(page.includes("Options.SetDisplayOptions(ShowSearch, ShowDisplayRange, ShowStepDetails)"));
+    assert.ok(page.includes("Options.GetDisplayOptions(ShowSearch, ShowDisplayRange, ShowStepDetails)"));
+});
+
+test("scheduler instructions are available through the native Actions help command", () => {
+    const page = alSource("Page", "CFProductionScheduler.Page.al");
+    const mgt = alSource("Codeunit", "CFProductionSchedulerMgt.Codeunit.al");
+    assert.ok(page.includes("action(HowToUseScheduler)"));
+    assert.ok(page.includes("Caption = 'How to Use Scheduler'"));
+    assert.ok(page.includes("Mgt.ShowHelp()"));
+    assert.ok(mgt.includes("Message(HelpLbl + '\\\\' + WorkingDisplayHelpLbl + '\\\\' + SelectionHelpLbl, ScopeLbl, TimeZoneLbl, LegendLbl, DropHelpLbl)"));
+});
+
+test("AL civil time serialization zero-pads hours before strict drag request round-trip validation", () => {
+    const source = alSource("Codeunit", "CFProductionSchedulerMgt.Codeunit.al");
+    const formatter = source.slice(source.indexOf("procedure CivilDateTime("), source.indexOf("procedure ParseCivilDateTime("));
+    assert.ok(formatter.includes("ConvertStr(Format(ValueTime, 0, '<Hours24,2>:<Minutes,2>:<Seconds,2>'), ' ', '0')"));
+    assert.ok(formatter.includes("exit(Format(ValueDate, 0, 9) + 'T00:00:00')"));
+    const parser = source.slice(source.indexOf("procedure ParseCivilDateTime("), source.indexOf("procedure GetOperation("));
+    assert.ok(parser.includes("CivilDateTime(ValueDate, ValueTime) <> Value"));
+    assert.ok(parser.includes("exit(CreateDateTime(ValueDate, ValueTime))"));
+});
+
+test("drag requests retain zero-padded civil times at every quarter hour without timezone conversion", () => {
+    const start = core.parseCivil("2026-10-01T00:00:00");
+    const axis = core.timeAxis("day", start, start + core.day);
+    for (let minutes = 0; minutes < 24 * 60; minutes += 15) {
+        const expected = `2026-10-01T${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}:00`;
+        const request = core.draggedAxisStart(axis, start, minutes, 24 * 60);
+        assert.equal(request, expected);
+        assert.equal(core.formatCivil(core.parseCivil(request)), expected);
+    }
+    for (const invalid of ["2026-10-01T 8:15:00", "2026-10-01T8:15:00", "2026-10-01T24:00:00"]) {
+        assert.ok(Number.isNaN(core.parseCivil(invalid)));
+    }
+});
+
 test("unscheduled and timeline placement are exclusive, regardless of existing dates or problems", () => {
     for (const confirmed of [false, true]) {
         for (const finished of [false, true]) {
@@ -28,6 +281,24 @@ test("unscheduled and timeline placement are exclusive, regardless of existing d
             }
         }
     }
+});
+
+test("unscheduled layout anchors undated work at the visible start and sizes by work duration", () => {
+    const start = core.parseCivil("2026-11-03T00:00:00");
+    const axis = core.timeAxis("hour", start, start + 2 * core.day, defaultHourWindows);
+    const undated = {id: "undated", start: "", end: "", workMinutes: 90};
+    const dated = {
+        id: "dated", start: "2026-11-03T09:00:00", end: "2026-11-03T10:30:00", workMinutes: 30
+    };
+    const before = structuredClone([undated, dated]);
+    const placed = core.unscheduledLayout([undated, dated], axis);
+    assert.deepEqual(placed.map(entry => entry.item.id), ["undated", "dated"]);
+    assert.equal(placed[0].start, core.parseCivil("2026-11-03T07:00:00"));
+    assert.equal(placed[0].width, 90 * core.minute / axis.duration * 100);
+    assert.equal(placed[1].left, core.axisPosition(axis, core.parseCivil(dated.start)) / axis.duration * 100);
+    assert.equal(placed[1].width, 30 * core.minute / axis.duration * 100);
+    assert.throws(() => core.unscheduledLayout([{id: "invalid", workMinutes: -1}], axis), RangeError);
+    assert.deepEqual([undated, dated], before);
 });
 
 test("successful scheduling transitions out of the pending list; failed or unconfirmed steps stay there", () => {
@@ -385,6 +656,41 @@ test("overlapping operations stack and adjacent operations reuse tracks", () => 
     assert.deepEqual(items.map(item => item.id), ["A", "B", "C"]);
 });
 
+test("rendered stacking separates minimum-width bars and shrinks lanes on a wider timeline", () => {
+    const entries = [
+        { item: { id: "A" }, start: 0, end: 1, left: 0, width: 0.1, track: 0 },
+        { item: { id: "B" }, start: 2, end: 3, left: 1, width: 0.1, track: 0 },
+        { item: { id: "C" }, start: 4, end: 5, left: 2, width: 0.1, track: 0 }
+    ];
+    assert.deepEqual(core.stackRenderedOperations(entries, 500).map(entry => entry.track), [0, 1, 2]);
+    assert.deepEqual(core.stackRenderedOperations(entries, 2000).map(entry => entry.track), [0, 0, 0]);
+    assert.deepEqual(entries.map(entry => entry.track), [0, 0, 0]);
+    assert.throws(() => core.stackRenderedOperations(entries, 0), RangeError);
+});
+
+test("rendered stacking preserves real overlaps and keeps working-window fragments on one lane", () => {
+    const entries = [
+        { item: { id: "A" }, start: 0, end: 100, left: 0, width: 10 },
+        { item: { id: "A" }, start: 0, end: 100, left: 50, width: 10 },
+        { item: { id: "B" }, start: 50, end: 70, left: 65, width: 5 },
+        { item: { id: "C" }, start: 100, end: 120, left: 80, width: 5 }
+    ];
+    const result = core.stackRenderedOperations(entries, 1000);
+    assert.deepEqual(result.map(entry => entry.track), [0, 0, 1, 0]);
+    assert.deepEqual(result.map(({ left, width }) => ({ left, width })),
+        entries.map(({ left, width }) => ({ left, width })));
+    assert.deepEqual(core.stackRenderedOperations([...entries].reverse(), 1000).map(entry => entry.track), [0, 1, 0, 0]);
+});
+
+test("compressed-axis markers at the same position stack even when times are adjacent", () => {
+    const entries = Array.from({ length: 20 }, (_, index) => ({
+        item: { id: String(index) }, start: index * 2, end: index * 2 + 1,
+        left: 25, width: 0
+    }));
+    assert.deepEqual(core.stackRenderedOperations(entries, 800).map(entry => entry.track),
+        entries.map((_, index) => index));
+});
+
 test("zero availability with load is overload with no utilisation percentage", () => {
     assert.deepEqual(core.capacity(0, 60), { remaining: -60, percent: null, overloaded: true });
     assert.deepEqual(core.capacity(0, 0), { remaining: 0, percent: null, overloaded: false });
@@ -649,12 +955,15 @@ test("Hour view displays 07:00-18:00 on every weekday, including weekends", () =
 
     test("Hour view validates all seven windows and uses civil time across daylight saving", () => {
         const start = core.parseCivil("2026-10-04T00:00:00");
-        for (const windows of [undefined, [], defaultHourWindows.slice(1),
+        for (const windows of [[], defaultHourWindows.slice(1),
             defaultHourWindows.map((w, i) => i === 6 ? { start: 18 * 3600000, end: 7 * 3600000 } : w),
             defaultHourWindows.map((w, i) => i === 0 ? { start: -1, end: 1 } : w),
             defaultHourWindows.map((w, i) => i === 0 ? { start: 0, end: core.day + 1 } : w)]) {
             assert.throws(() => core.timeAxis("hour", start, start + core.day, windows), RangeError);
         }
+        const fullDay = core.timeAxis("hour", start, start + 2 * core.day);
+        assert.equal(fullDay.duration, 2 * core.day);
+        assert.equal(fullDay.ticks.length, 48);
         const axis = core.timeAxis("hour", start, start + 2 * core.day, defaultHourWindows);
         assert.equal(axis.ticks.length, 22);
         assert.equal(core.formatCivil(axis.segments[0].start), "2026-10-04T07:00:00");
@@ -663,3 +972,86 @@ test("Hour view displays 07:00-18:00 on every weekday, including weekends", () =
                 core.timeAxis(view, start, start + 2 * core.day));
         }
     });
+
+    test("non-working hour segments complement resource calendar intervals across visible full days", () => {
+        const start = core.parseCivil("2026-11-03T00:00:00");
+        const axis = core.timeAxis("hour", start, start + 2 * core.day);
+        const windows = [
+            { start: "2026-11-03T07:00:00", end: "2026-11-03T11:00:00" },
+            { start: "2026-11-03T13:00:00", end: "2026-11-03T18:00:00" },
+            { start: "2026-11-04T08:30:00", end: "2026-11-04T16:30:00" }
+        ];
+        const segments = core.nonWorkingSegments(axis, windows);
+        assert.deepEqual(segments.map(({ start: from, end }) => [
+            core.formatCivil(from), core.formatCivil(end)
+        ]), [
+            ["2026-11-03T00:00:00", "2026-11-03T07:00:00"],
+            ["2026-11-03T11:00:00", "2026-11-03T13:00:00"],
+            ["2026-11-03T18:00:00", "2026-11-04T00:00:00"],
+            ["2026-11-04T00:00:00", "2026-11-04T08:30:00"],
+            ["2026-11-04T16:30:00", "2026-11-05T00:00:00"]
+        ]);
+        assert.deepEqual(core.nonWorkingSegments(axis, []).map(segment => segment.width), [50, 50]);
+        assert.deepEqual(core.nonWorkingSegments(axis, windows).map(segment => segment.width),
+            [7 / 48 * 100, 2 / 48 * 100, 6 / 48 * 100, 8.5 / 48 * 100, 7.5 / 48 * 100]);
+    });
+
+test("multi-selection helpers use the full routing identity and never mutate operations", () => {
+    const ops = [
+        routingOperation("a", { successors: ["b"] }),
+        routingOperation("b", { predecessors: ["a"], successors: ["c"] }),
+        routingOperation("c", { predecessors: ["b"] }),
+        routingOperation("x", { statusId: 2 }),
+        routingOperation("y", { routingReference: 20000 }),
+        routingOperation("z", { routingNo: "OTHER" }),
+        routingOperation("w", { order: "ORDER-2" }),
+        routingOperation("cross", { predecessors: ["a"], routingNo: "OTHER" })
+    ];
+    const before = structuredClone(ops);
+    assert.deepEqual(core.routingChain(ops, "b"), ["a", "b", "c"]);
+    assert.deepEqual(core.followingSteps(ops, "a"), ["a", "b", "c"]);
+    assert.deepEqual(core.followingSteps(ops, "b"), ["b", "c"]);
+    assert.deepEqual(core.followingSteps(ops, "c"), ["c"]);
+    assert.deepEqual(core.routingChain(ops, "missing"), []);
+    assert.deepEqual(core.followingSteps(ops, "missing"), []);
+    assert.equal(core.sameRouting(ops[0], ops[3]), false);
+    assert.deepEqual(core.toggleSelection(["a"], "b"), ["a", "b"]);
+    assert.deepEqual(core.toggleSelection(["a", "b"], "a"), ["b"]);
+    assert.deepEqual(core.pruneSelection(["a", "gone", "a", "c"], ops), ["a", "c"]);
+    const versioned = ops.map((item, index) => ({ ...item, version: String(index + 1) }));
+    assert.deepEqual(core.lockRequest(versioned, ["c", "gone", "a", "c"]), [{ id: "c", version: "3" }, { id: "a", version: "1" }]);
+    assert.deepEqual(ops, before);
+});
+
+test("cyclic successor data cannot loop following-step selection", () => {
+    const ops = [routingOperation("a", { successors: ["b"] }), routingOperation("b", { successors: ["a"] })];
+    assert.deepEqual(core.followingSteps(ops, "b"), ["a", "b"]);
+});
+
+test("position locks and selection bridge are declared, validated and block dragging and manual edits", () => {
+    const addIn = alSource("ControlAddIn", "CFProductionSchedulerAddIn.ControlAddIn.al");
+    const source = alSource("ControlAddIn", "scheduler.js");
+    const table = alSource("Table", "CFScheduleDraftOperation.Table.al");
+    const routing = alSource("Page", "CFScheduleDraftRouting.Page.al");
+    const mgt = alSource("Codeunit", "CFProductionSchedulerMgt.Codeunit.al");
+    assert.match(addIn, /event OperationsLockRequested\(OperationsJson: Text; Locked: Boolean\);/);
+    assert.match(addIn, /procedure SelectOperations\(Command: Text\);/);
+    assert.match(addIn, /procedure LockSelectedOperations\(Locked: Boolean\);/);
+    assert.match(addIn, /procedure SetDraftStatus\(State: Text; MessageText: Text\);/);
+    for (const name of ["SelectOperations", "LockSelectedOperations", "SetDraftStatus"]) {
+        assert.ok(source.includes(`window.${name} = function`), `Missing global ${name}`);
+    }
+    assert.match(table, /field\(26; PositionLocked; Boolean\)/);
+    assert.match(routing, /field\(PositionLocked; Rec\.PositionLocked\)/);
+    assert.match(source, /typeof item\.positionLocked !== "boolean"/);
+    assert.match(source, /item\.positionLocked \|\| stale \|\| busy\) return;/);
+    assert.match(source, /item\.editable && !item\.positionLocked\)\);/);
+    assert.match(source, /\["edit", "editDraft", item\.editable && !item\.positionLocked\]/);
+    assert.match(source, /if \(pendingSave\) setDraftStatus\("saved", ""\);/);
+    assert.doesNotMatch(mgt, /Item\.Add\('positionLocked'/);
+    assert.match(mgt, /Drafts\.AddScenarioWarnings\(ScenarioCode, Warnings\);/);
+    for (const key of ["selectedCount", "selectChain", "selectFollowing", "clearSelection", "lockSelected", "unlockSelected",
+        "lockStep", "unlockStep", "positionLocked", "lockedNoEdit", "noSelection", "saving", "saved", "saveFailed", "viewStateFailed"]) {
+        assert.ok(mgt.includes(`Result.Add('${key}', `), `Missing label ${key}`);
+    }
+});

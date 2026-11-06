@@ -12,7 +12,6 @@ codeunit 91305 CF_SchedulerUpgrade
         if Setup.Get('') then begin
             if Setup.MaximumScheduleDays = 0 then
                 Setup.MaximumScheduleDays := 90;
-            Setup.InitialiseHourlyDefaults();
             Setup.Modify(false);
         end;
     end;

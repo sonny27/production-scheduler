@@ -42,7 +42,8 @@
         };
     }
 
-    function layout(items, viewStart, viewEnd, axis) {
+    function layout(items, viewStart, viewEnd, axis, workingWindows) {
+        const windows = workingWindows === undefined ? undefined : mergeWorkingWindows(workingWindows);
         const visible = items.map(item => ({
             item, start: parseCivil(item.start), end: parseCivil(item.end)
         })).map(entry => ({
@@ -50,12 +51,124 @@
         })).filter(entry => entry.position)
             .sort((a, b) => a.start - b.start || a.end - b.end || a.item.id.localeCompare(b.item.id));
         const trackEnds = [];
-        return visible.map(entry => {
+        return visible.flatMap(entry => {
             let track = trackEnds.findIndex(end => end <= entry.start);
             if (track < 0) track = trackEnds.length;
             trackEnds[track] = entry.end;
-            return { ...entry, track, ...entry.position };
+            const placed = { ...entry, track, ...entry.position };
+            if (windows === undefined) return [placed];
+            const parts = windows.flatMap(window => {
+                const start = Math.max(entry.start, window.start);
+                const end = Math.min(entry.end, window.end);
+                const position = axis ? axisClip(axis, start, end) : clip(start, end, viewStart, viewEnd);
+                return position ? [{...placed, ...position, segmentStart: start, segmentEnd: end}] : [];
+            });
+            return parts.length ? parts : [{...placed, width: 0, noWorkingPortion: true}];
         });
+    }
+
+    function stackRenderedOperations(entries, timelineWidth) {
+        if (!Number.isFinite(timelineWidth) || timelineWidth <= 0) throw new RangeError("Invalid timeline width.");
+        const operations = new Map();
+        for (const entry of entries) {
+            const left = entry.left / 100 * timelineWidth;
+            const right = left + Math.max(12, entry.width / 100 * timelineWidth);
+            const operation = operations.get(entry.item.id);
+            if (operation) {
+                operation.left = Math.min(operation.left, left);
+                operation.right = Math.max(operation.right, right);
+            } else operations.set(entry.item.id, { entry, left, right });
+        }
+        const tracks = [];
+        const assigned = new Map();
+        const sorted = [...operations.values()].sort((a, b) =>
+            a.entry.start - b.entry.start || a.entry.end - b.entry.end || a.entry.item.id.localeCompare(b.entry.item.id));
+        for (const operation of sorted) {
+            // Minimum-width markers and compressed dates can collide without a time overlap.
+            let track = tracks.findIndex(previous =>
+                previous.end <= operation.entry.start && previous.right + 2 <= operation.left);
+            if (track < 0) track = tracks.length;
+            tracks[track] = { end: operation.entry.end, right: operation.right };
+            assigned.set(operation.entry.item.id, track);
+        }
+        return entries.map(entry => ({ ...entry, track: assigned.get(entry.item.id) }));
+    }
+
+    function nonWorkingSegments(axis, workingWindows) {
+        if (!axis || !Number.isFinite(axis.duration) || axis.duration <= 0 ||
+            !Array.isArray(axis.segments)) return [];
+        const windows = mergeWorkingWindows(workingWindows);
+        return axis.segments.flatMap(segment => {
+            const result = [];
+            let cursor = segment.start;
+            for (const window of windows) {
+                if (window.end <= cursor || window.start >= segment.end) continue;
+                if (window.start > cursor) result.push({start: cursor, end: Math.min(window.start, segment.end)});
+                cursor = Math.max(cursor, window.end);
+                if (cursor >= segment.end) break;
+            }
+            if (cursor < segment.end) result.push({start: cursor, end: segment.end});
+            return result.filter(interval => interval.end > interval.start).map(interval => ({
+                ...interval,
+                left: axisPosition(axis, interval.start) / axis.duration * 100,
+                width: (axisPosition(axis, interval.end) - axisPosition(axis, interval.start)) / axis.duration * 100
+            }));
+        });
+    }
+
+    function unscheduledLayout(items, axis) {
+        if (!axis || !Number.isFinite(axis.duration) || axis.duration <= 0 || !axis.segments.length) return [];
+        const projected = [];
+        const originals = new Map();
+        for (const item of items) {
+            const start = parseCivil(item.start);
+            const end = parseCivil(item.end);
+            const hasDates = Number.isFinite(start) && Number.isFinite(end) && end > start;
+            if (hasDates && !overlaps(start, end, axis.start, axis.end)) continue;
+            if (item.workMinutes !== undefined &&
+                (!Number.isFinite(item.workMinutes) || item.workMinutes < 0)) {
+                throw new RangeError("Invalid unscheduled operation duration.");
+            }
+            let duration = Number.isFinite(item.workMinutes) ? item.workMinutes * minute
+                : hasDates ? end - start : 0;
+            if (duration <= 0 && hasDates) duration = end - start;
+            if (!Number.isFinite(duration) || duration < 0) throw new RangeError("Invalid unscheduled operation duration.");
+            const position = hasDates ? axisPosition(axis, start) : 0;
+            if (position >= axis.duration) continue;
+            const endPosition = Math.min(axis.duration, position + duration);
+            if (endPosition <= position) continue;
+            const projectedStart = axisTimeAt(axis, position);
+            const projectedEnd = endPosition === axis.duration
+                ? axis.segments.at(-1).end
+                : axisTimeAt(axis, endPosition);
+            if (!Number.isFinite(projectedStart) || !Number.isFinite(projectedEnd) || projectedEnd <= projectedStart) continue;
+            const projectedItem = {
+                ...item,
+                start: formatCivil(projectedStart),
+                end: formatCivil(projectedEnd)
+            };
+            projected.push(projectedItem);
+            originals.set(item.id, item);
+        }
+        return layout(projected, axis.start, axis.end, axis)
+            .map(entry => ({...entry, item: originals.get(entry.item.id)}));
+    }
+
+    function mergeWorkingWindows(windows) {
+        if (!Array.isArray(windows)) throw new TypeError("Working calendar windows must be an array.");
+        const sorted = windows.map(window => {
+            const start = parseCivil(window.start);
+            const end = parseCivil(window.end);
+            if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) throw new RangeError("Invalid working calendar interval.");
+            return {start, end};
+        }).sort((a, b) => a.start - b.start || a.end - b.end);
+        const merged = [];
+        for (const window of sorted) {
+            const previous = merged.at(-1);
+            if (previous && window.start <= previous.end) previous.end = Math.max(previous.end, window.end);
+            else merged.push({...window});
+        }
+        return merged;
     }
 
     function capacity(available, allocated) {
@@ -72,6 +185,46 @@
     function operationVisible(item, search, includeProblemSteps) {
         return (includeProblemSteps || item.problems.length === 0) &&
             (!search || `${item.order} ${item.item} ${item.operation} ${item.description}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
+    }
+
+    function capacityFill(available, allocated) {
+        const values = capacity(available, allocated);
+        return {
+            loaded: allocated > 0,
+            percent: allocated > 0 ? Math.max(0, Math.min(100, values.percent ?? 100)) : 0,
+            overloaded: allocated > 0 && values.overloaded
+        };
+    }
+
+    function hourlyCapacity(axis, calendarWindows, loadWindows) {
+        if (!axis || axis.view !== "hour") throw new RangeError("Hourly capacity requires an Hour axis.");
+        const cells = axis.ticks.map(tick => ({...tick, available: 0, allocated: 0}));
+        function accumulate(windows, field) {
+            if (!Array.isArray(windows)) throw new TypeError("Timed capacity windows must be an array.");
+            for (const window of windows) {
+                const start = parseCivil(window.start);
+                const end = parseCivil(window.end);
+                if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start ||
+                    !Number.isFinite(window.minutes) || window.minutes < 0) {
+                    throw new RangeError("Invalid timed capacity interval.");
+                }
+                let low = 0;
+                let high = cells.length;
+                while (low < high) {
+                    const middle = Math.floor((low + high) / 2);
+                    if (cells[middle].end <= start) low = middle + 1;
+                    else high = middle;
+                }
+                for (let index = low; index < cells.length && cells[index].start < end; index++) {
+                    const cell = cells[index];
+                    const overlap = Math.min(end, cell.end) - Math.max(start, cell.start);
+                    if (overlap > 0) cell[field] += window.minutes * overlap / (end - start);
+                }
+            }
+        }
+        accumulate(calendarWindows, "available");
+        accumulate(loadWindows, "allocated");
+        return cells;
     }
 
     function onTimeline(item) {
@@ -170,6 +323,50 @@
         return { enabled: true, edges: [...edges.values()] };
     }
 
+    function sameRouting(a, b) {
+        return Boolean(a && b) && a.statusId === b.statusId && a.order === b.order &&
+            a.routingReference === b.routingReference && a.routingNo === b.routingNo;
+    }
+
+    function routingChain(operations, id) {
+        const origin = operations.find(item => item.id === id);
+        return origin ? operations.filter(item => sameRouting(item, origin)).map(item => item.id) : [];
+    }
+
+    function followingSteps(operations, id) {
+        const origin = operations.find(item => item.id === id);
+        if (!origin) return [];
+        const routing = new Map(operations.filter(item => sameRouting(item, origin)).map(item => [item.id, item]));
+        const result = new Set([origin.id]);
+        const queue = [origin];
+        while (queue.length) {
+            const item = queue.shift();
+            const next = [...item.successors];
+            for (const other of routing.values()) if (other.predecessors.includes(item.id)) next.push(other.id);
+            for (const nextId of next) {
+                const successor = routing.get(nextId);
+                if (successor && !result.has(nextId)) {
+                    result.add(nextId);
+                    queue.push(successor);
+                }
+            }
+        }
+        return operations.filter(item => result.has(item.id)).map(item => item.id);
+    }
+
+    function toggleSelection(ids, id) {
+        return ids.includes(id) ? ids.filter(value => value !== id) : [...ids, id];
+    }
+
+    function pruneSelection(ids, operations) {
+        const known = new Set(operations.map(item => item.id));
+        return [...new Set(ids)].filter(id => known.has(id));
+    }
+
+    function lockRequest(operations, ids) {
+        const byId = new Map(operations.map(item => [item.id, item]));
+        return [...new Set(ids)].filter(id => byId.has(id)).map(id => ({ id, version: byId.get(id).version }));
+    }
     function workingDates(resources) {
         const dates = new Set();
         for (const resource of resources) {
@@ -180,6 +377,19 @@
             }
         }
         return [...dates].sort();
+    }
+
+    function visibleDates(resources, start, end, hideNonWorkingDays, hideWeekends) {
+        if (!hideNonWorkingDays && !hideWeekends) return undefined;
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) throw new RangeError("Invalid visible date range.");
+        const working = hideNonWorkingDays ? new Set(workingDates(resources)) : null;
+        const dates = [];
+        for (let cursor = start; cursor < end; cursor += day) {
+            const date = formatCivil(cursor).slice(0, 10);
+            if (hideWeekends && [0, 6].includes(new Date(cursor).getUTCDay())) continue;
+            if (!working || working.has(date)) dates.push(date);
+        }
+        return dates;
     }
 
     function timeAxis(view, start, end, hourWindows, visibleDates) {
@@ -195,7 +405,7 @@
         }
         const visible = visibleDates === undefined ? null : new Set(visibleDates);
         const axis = { view, start, end, filtered: visible !== null, segments: [] };
-        if (view === "hour") {
+        if (view === "hour" && hourWindows !== undefined) {
             if (!Array.isArray(hourWindows) || hourWindows.length !== 7 ||
                 hourWindows.some(window => !window || !Number.isInteger(window.start) || !Number.isInteger(window.end) ||
                     window.start < 0 || window.end > day || window.end <= window.start)) {
@@ -207,7 +417,8 @@
             date.setUTCHours(0, 0, 0, 0);
             for (let cursor = date.getTime(); cursor < end; cursor += day) {
                 if (visible && !visible.has(formatCivil(cursor).slice(0, 10))) continue;
-                const window = view === "hour" ? hourWindows[(new Date(cursor).getUTCDay() + 6) % 7] : { start: 0, end: day };
+                const window = view === "hour" && hourWindows
+                    ? hourWindows[(new Date(cursor).getUTCDay() + 6) % 7] : { start: 0, end: day };
                 const from = Math.max(start, cursor + window.start);
                 const to = Math.min(end, cursor + window.end);
                 if (to > from) {
@@ -292,6 +503,7 @@
         };
     }
 
-    return Object.freeze({ minute, day, parseCivil, formatCivil, overlaps, clip, layout, capacity, operationVisible, onTimeline, draggedStart, inputToCivil, timeAxis, rangeWindow,
-        axisPosition, axisClip, axisContains, currentTimePosition, draggedAxisStart, droppedAxisStart, routingLinks, workingDates });
+    return Object.freeze({ minute, day, parseCivil, formatCivil, overlaps, clip, layout, stackRenderedOperations, unscheduledLayout, nonWorkingSegments, capacity, capacityFill, hourlyCapacity, operationVisible, onTimeline, draggedStart, inputToCivil, timeAxis, rangeWindow,
+        axisPosition, axisClip, axisContains, currentTimePosition, draggedAxisStart, droppedAxisStart, routingLinks, workingDates, visibleDates,
+        sameRouting, routingChain, followingSteps, toggleSelection, pruneSelection, lockRequest });
 }));
