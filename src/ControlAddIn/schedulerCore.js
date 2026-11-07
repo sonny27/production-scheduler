@@ -72,7 +72,7 @@
         const operations = new Map();
         for (const entry of entries) {
             const left = entry.left / 100 * timelineWidth;
-            const right = left + Math.max(12, entry.width / 100 * timelineWidth);
+            const right = left + Math.max(14, entry.width / 100 * timelineWidth);
             const operation = operations.get(entry.item.id);
             if (operation) {
                 operation.left = Math.min(operation.left, left);
@@ -182,8 +182,9 @@
         };
     }
 
-    function operationVisible(item, search, includeProblemSteps) {
-        return (includeProblemSteps || item.problems.length === 0) &&
+    function operationVisible(item, search, includeProblemSteps, approvalFilter = 0) {
+        return (approvalFilter === 0 || (approvalFilter === 1 ? item.approved === true : item.approved !== true)) &&
+            (includeProblemSteps || item.problems.length === 0) &&
             (!search || `${item.order} ${item.item} ${item.operation} ${item.description}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
     }
 
@@ -231,12 +232,18 @@
         return item.confirmed === true || item.finished === true;
     }
 
-    function draggedStart(start, deltaPixels, width, span) {
+    function snapInterval(minutes) {
+        if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) throw new RangeError("Invalid drag snap minutes.");
+        return minutes * minute;
+    }
+
+    function draggedStart(start, deltaPixels, width, span, snapMinutes = 15) {
+        const snap = snapInterval(snapMinutes);
         if (!Number.isFinite(start) || !Number.isFinite(deltaPixels) ||
             !Number.isFinite(width) || width <= 0 || !Number.isFinite(span) || span <= 0) {
             return "";
         }
-        const snappedDelta = Math.round(deltaPixels / width * span / (15 * minute)) * 15 * minute;
+        const snappedDelta = Math.round(deltaPixels / width * span / snap) * snap;
         return formatCivil(start + snappedDelta);
     }
 
@@ -272,10 +279,14 @@
         return axisContains(axis, time) ? axisPosition(axis, time) / axis.duration * 100 : null;
     }
 
-    function draggedAxisStart(axis, start, deltaPixels, width) {
-        if (!axis.compressed) return draggedStart(start, deltaPixels, width, axis.end - axis.start);
+    function draggedAxisStart(axis, start, deltaPixels, width, snapMinutes = 15) {
+        const snap = snapInterval(snapMinutes);
+        if (!axis.compressed) {
+            const result = draggedStart(start, deltaPixels, width, axis.end - axis.start, snapMinutes);
+            return axisContains(axis, parseCivil(result)) ? result : "";
+        }
         if (!axisContains(axis, start) || !Number.isFinite(deltaPixels) || !Number.isFinite(width) || width <= 0) return "";
-        const delta = Math.round(deltaPixels / width * axis.duration / (15 * minute)) * 15 * minute;
+        const delta = Math.round(deltaPixels / width * axis.duration / snap) * snap;
         if (delta === 0) return formatCivil(start);
         return formatCivil(axisTimeAt(axis, axisPosition(axis, start) + delta));
     }
@@ -290,14 +301,31 @@
         return NaN;
     }
 
-    function droppedAxisStart(axis, pixels, width) {
+    function droppedAxisStart(axis, pixels, width, snapMinutes = 15) {
+        const snap = snapInterval(snapMinutes);
         if (!Number.isFinite(pixels) || !Number.isFinite(width) || width <= 0 || pixels < 0 || pixels >= width) return "";
         const time = axisTimeAt(axis, pixels / width * axis.duration);
         const segment = axis.segments.find(entry => time >= entry.start && time < entry.end);
         if (!segment) return "";
-        const snap = 15 * minute;
         const last = Math.max(segment.start, Math.floor((segment.end - 1000) / snap) * snap);
         return formatCivil(Math.max(segment.start, Math.min(last, Math.round(time / snap) * snap)));
+    }
+
+    function dragPreview(item, requestedStart) {
+        const start = parseCivil(requestedStart);
+        const originalStart = parseCivil(item.start);
+        const originalEnd = parseCivil(item.end);
+        const duration = !onTimeline(item) && Number.isFinite(item.workMinutes) && item.workMinutes > 0
+            ? item.workMinutes * minute : originalEnd > originalStart ? originalEnd - originalStart
+            : Number.isFinite(item.workMinutes) && item.workMinutes > 0 ? item.workMinutes * minute : NaN;
+        return { start: formatCivil(start), end: formatCivil(start + duration) };
+    }
+
+    function dueDatePosition(axis, dueDate) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate || "")) return null;
+        const start = parseCivil(dueDate + "T00:00:00");
+        if (!Number.isFinite(start) || start < axis.start || start >= axis.end || axis.duration <= 0) return null;
+        return axisPosition(axis, start + day) / axis.duration * 100;
     }
 
     function routingLinks(operations, selectedId, documentFocus = false) {
@@ -504,6 +532,6 @@
     }
 
     return Object.freeze({ minute, day, parseCivil, formatCivil, overlaps, clip, layout, stackRenderedOperations, unscheduledLayout, nonWorkingSegments, capacity, capacityFill, hourlyCapacity, operationVisible, onTimeline, draggedStart, inputToCivil, timeAxis, rangeWindow,
-        axisPosition, axisClip, axisContains, currentTimePosition, draggedAxisStart, droppedAxisStart, routingLinks, workingDates, visibleDates,
+        axisPosition, axisClip, axisContains, currentTimePosition, draggedAxisStart, droppedAxisStart, dragPreview, dueDatePosition, routingLinks, workingDates, visibleDates,
         sameRouting, routingChain, followingSteps, toggleSelection, pruneSelection, lockRequest });
 }));

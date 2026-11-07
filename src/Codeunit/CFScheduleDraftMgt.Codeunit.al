@@ -562,9 +562,14 @@ codeunit 91307 CF_ScheduleDraftMgt
         Late: Boolean;
         ValidResource: Boolean;
         ValidDates: Boolean;
+        Approved: Boolean;
         Reported: Dictionary of [Text, Boolean];
     begin
         Item := Draft.GetSnapshot();
+        if Routing.GetBySystemId(Draft.OperationId) then
+            Approved := Mgt.IsConfirmed(Routing);
+        Item.Remove('approved');
+        Item.Add('approved', Approved);
         Issue := Draft.Restriction;
         if (Issue = '') and not Conflict then
             if Routing.GetBySystemId(Draft.OperationId) then

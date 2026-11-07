@@ -33,6 +33,7 @@ table 91306 CF_SchedulerViewState
         field(24; ShowDisplayRange; Boolean) { Caption = 'Show Display Range'; }
         field(25; ShowStepDetails; Boolean) { Caption = 'Show Step Details'; }
         field(26; HideUnscheduled; Boolean) { Caption = 'Hide Unscheduled'; }
+        field(27; ApprovalFilter; Integer) { Caption = 'Approval Filter'; MinValue = 0; MaxValue = 2; }
     }
     keys { key(PK; EntryNo) { Clustered = true; } }
 }

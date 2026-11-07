@@ -19,10 +19,11 @@
         hiddenClippedStart: "The actual start is outside visible periods. Use Schedule start in the details.",
         hiddenDragRange: "Drop within visible dates and hours, or enter the start manually.",
         title: "Production Scheduler", currentTime: "Current time", unconfirmed: "Unscheduled", unscheduled: "Unscheduled",
+        requestedStart: "Requested start", estimatedFinish: "Estimated finish (before recalculation)", requiredDue: "Required due",
         empty: "No operations in this view.", schedule: "Schedule start", confirm: "Confirm existing dates",
         order: "Open production order", routing: "Schedule Details", start: "Start", end: "Finish", due: "Due",
         openBCRouting: "Open BC Routing",
-        draftDetails: "Schedule Details", editDraft: "Edit Draft Start", zoomDocument: "Zoom to Document",
+        draftDetails: "Schedule Details", editDraft: "Edit Draft Start", zoomDocument: "Zoom to Document", unzoomDocument: "Unzoom",
         resetDraft: "Reset Order Draft from BC", commitOrder: "Commit This Order to BC", draftScenario: "Draft scenario",
         hour: "Hour", day: "Day", week: "Week", month: "Month", busy: "Working...", failed: "Request failed; refresh before retrying.",
         hourScope: "Hour view shows the full day. Light-blue intervals are non-working time from each resource calendar.",
@@ -35,13 +36,17 @@
         select: "Select an operation.", late: "Late", pending: "Awaiting confirmation", confirmed: "Confirmed", finished: "Finished",
         invalidDate: "Enter a valid start date and time.", search: "Find order, item or operation",
         selectionToolbar: "Step selection", selectedCount: "%1 selected", selectChain: "Select Routing Chain",
-        selectFollowing: "Select Following Steps", clearSelection: "Clear Selection", lockSelected: "Lock Selected",
-        unlockSelected: "Unlock Selected", lockStep: "Lock Position", unlockStep: "Unlock Position",
+        selectFollowing: "Select Following Steps", clearSelection: "Clear Selection", lockSelected: "Lock Position Selected",
+        unlockSelected: "Unlock Position Selected", lockStep: "Lock Position", unlockStep: "Unlock Position",
         positionLocked: "Position locked", lockedNoEdit: "This step's position is locked. Unlock it before dragging or editing its start.",
         noSelection: "Select at least one step first.", noLockChange: "The selected steps already have this lock state.",
         selectionUnavailable: "Selection actions are unavailable.", invalidSelectionCommand: "Unsupported selection command.",
         saving: "Saving draft...", saved: "Draft saved.", saveFailed: "The draft change was not saved. Refresh before retrying.",
-        viewStateFailed: "The scroll position and selection could not be remembered for this session."
+        viewStateFailed: "The scroll position and selection could not be remembered for this session.",
+        approvedOnlyScope: "Showing approved operations only. Capacity, planning and commit scope are not filtered.",
+        approvedStatus: "Approved", unapprovedStatus: "Unapproved",
+        problemDetails: "Show Problem Details", close: "Close",
+        unapprovedOnlyScope: "Showing unapproved operations only. Draft approval alone does not count."
     };
     const days = [
         { date: "2026-11-03", available: 480, allocated: 600 },
@@ -79,6 +84,7 @@
     const payload = {
         scenario: "BASE", scenarioName: "Shared planning scenario",
         viewMode: "day",
+        dragSnapMinutes: 15,
         currentTime: "2026-11-03T10:15:00",
         hideNonWorkingDays: false,
         includeProblemSteps: true,
@@ -98,6 +104,233 @@
         ]
     };
     window.fixture = { payload, calls: [], failNext: false, bcOperations: structuredClone(payload.operations) };
+    window.fixture.assertProblemDetails = function () {
+        const original = structuredClone(fixture.payload);
+        const bridge = Microsoft.Dynamics.NAV.InvokeExtensibilityMethod;
+        Microsoft.Dynamics.NAV.InvokeExtensibilityMethod = (name, args, skip, success) => success();
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        try {
+            const p = structuredClone(original);
+            p.operations[0].problems = ["Capacity overload", "Routing <problem>"];
+            p.operations[1].problems = [];
+            p.includeProblemSteps = true;
+            p.approvalFilter = 0;
+            fixture.payload = p;
+            LoadSchedule(p);
+            const node = document.querySelector('[data-operation="op-a"]');
+            node.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
+            document.querySelector('[data-command="problems"]').click();
+            const dialog = document.querySelector(".cf-problem-dialog");
+            assert(dialog.open && dialog.textContent.includes("Capacity overload") &&
+                dialog.textContent.includes("Routing <problem>"), "Problem details omitted reported issues");
+            assert(!dialog.querySelector("problem"), "Problem details interpreted text as markup");
+            dialog.querySelector("button").click();
+            assert(!dialog.open, "Close retained an open problem dialog");
+            document.querySelector('[data-operation="op-b"]').dispatchEvent(new MouseEvent("contextmenu", {
+                bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
+            assert(!document.querySelector('[data-command="problems"]'), "Healthy operation offered problem details");
+            return { problemAction: true, reportedIssues: true, safeText: true, close: true, healthyActionHidden: true };
+        } finally {
+            Microsoft.Dynamics.NAV.InvokeExtensibilityMethod = bridge;
+            fixture.payload = original;
+            LoadSchedule(original);
+        }
+    };
+    window.fixture.assertApprovalBadges = function () {
+        const original = structuredClone(fixture.payload);
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        try {
+            const p = structuredClone(original);
+            p.approvalFilter = 0;
+            fixture.payload = p;
+            for (const [approved, problem] of [[true, false], [false, false], [true, true], [false, true]]) {
+                p.operations[0].approved = approved;
+                p.operations[0].problems = problem ? ["Sample problem"] : [];
+                LoadSchedule(p);
+                document.querySelector('[data-operation="op-a"]').dispatchEvent(new PointerEvent("pointerenter", {pointerType: "mouse"}));
+                const tooltip = document.querySelector(".cf-operation-tooltip");
+                const badge = tooltip.querySelector(approved ? ".cf-approval-approved" : ".cf-approval-unapproved");
+                assert(!tooltip.hidden && badge.textContent === (approved ? "Approved" : "Unapproved"),
+                    "Tooltip omitted the committed approval badge");
+                assert(Boolean(tooltip.querySelector(".cf-approval-problem")) === problem,
+                    "Tooltip problem badge incorrectly replaces or omits approval");
+                assert(getComputedStyle(badge).backgroundColor === (approved ? "rgb(20, 107, 53)" : "rgb(255, 224, 178)"),
+                    "Approval badge colour does not match its status");
+            }
+            return { approvalStates: 2, independentProblemBadge: true, colours: true };
+        } finally {
+            fixture.payload = original;
+            LoadSchedule(original);
+        }
+    };
+    window.fixture.assertApprovalFilters = function () {
+        const original = structuredClone(fixture.payload);
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        try {
+            const p = structuredClone(original);
+            p.operations.forEach(item => { item.approved = item.id === "op-a"; });
+            const capacity = JSON.stringify(p.resources);
+            for (const [mode, expected] of [[1, ["op-a"]], [2, ["op-b", "op-c", "op-p"]], [0, ["op-a", "op-b", "op-c", "op-p"]]]) {
+                p.approvalFilter = mode;
+                fixture.payload = p;
+                LoadSchedule(p);
+                const ids = [...new Set([...document.querySelectorAll(".cf-board [data-operation]")].map(node => node.dataset.operation))].sort();
+                assert(JSON.stringify(ids) === JSON.stringify(expected), "Approval filter does not use committed approval independently of draft confirmation");
+                for (const node of document.querySelectorAll(".cf-operation")) {
+                    const item = p.operations.find(item => item.id === node.dataset.operation);
+                    assert(node.classList.contains("cf-unapproved") === (item.approved === false && !item.finished),
+                        "Timeline approval styling does not match committed approval");
+                    if (item.approved === false && !item.finished && !item.problems.length && !item.late) {
+                        const style = getComputedStyle(node);
+                        assert(style.backgroundColor === "rgb(226, 243, 217)" && style.borderLeftStyle === "dashed" &&
+                            style.borderLeftColor === "rgb(232, 135, 30)", "Unapproved styling is not light green with orange dashed border");
+                    }
+                }
+                assert(Boolean(document.querySelector(".cf-approval-scope")) === Boolean(mode), "Active approval filter not identified");
+                assert(JSON.stringify(p.resources) === capacity &&
+                    document.querySelector(".cf-capacity-day").textContent.includes("10 / 8"), "Approval filter changed capacity");
+            }
+            document.querySelector('[data-operation="op-a"]').click();
+            p.approvalFilter = 2;
+            LoadSchedule(p);
+            assert(!document.querySelector(".cf-required-due") &&
+                document.querySelector(".cf-selection-count").textContent.includes("0"), "Filtered selection retained invisible operation actions");
+            return { approvedOnly: true, unapprovedOnly: true, showAll: true, capacityUnchanged: true, hiddenSelectionCleared: true };
+        } finally {
+            fixture.payload = original;
+            LoadSchedule(original);
+        }
+    };
+    window.fixture.assertDocumentZoomToolbar = function () {
+        const original = structuredClone(fixture.payload);
+        const bridge = Microsoft.Dynamics.NAV.InvokeExtensibilityMethod;
+        const requests = [];
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        Microsoft.Dynamics.NAV.InvokeExtensibilityMethod = (name, args, skip, success) => {
+            requests.push({ name, args });
+            success();
+        };
+        try {
+            const p = structuredClone(original);
+            p.documentFocus = false;
+            fixture.payload = p;
+            LoadSchedule(p);
+            document.querySelector('[data-operation="op-a"]').click();
+            let control = document.querySelector(".cf-document-zoom");
+            assert(control.textContent === "Zoom to Document" && !control.disabled, "Zoom button unavailable for selection");
+            control.click();
+            assert(requests.at(-1).name === "OperationContextRequested" &&
+                requests.at(-1).args[0] === "op-a" && requests.at(-1).args[2] === "zoom", "Zoom did not use existing BC view command");
+            p.documentFocus = true;
+            LoadSchedule(p);
+            control = document.querySelector(".cf-document-zoom");
+            assert(control.textContent === "Unzoom" && !control.disabled, "Focused view did not offer Unzoom");
+            document.querySelector('[data-selection="clear"]').click();
+            assert(!control.disabled && !control.closest(".cf-selection").hidden, "Clearing selection hid Unzoom");
+            control.click();
+            assert(requests.at(-1).args[2] === "unzoom", "Unzoom did not request previous-view restoration");
+            p.documentFocus = false;
+            LoadSchedule(p);
+            document.querySelector('[data-operation="op-a"]').click();
+            assert(document.querySelector(".cf-document-zoom").textContent === "Zoom to Document", "Restore retained Unzoom caption");
+            return { zoomDispatch: true, unzoomWithoutSelection: true, restoredCaption: true };
+        } finally {
+            Microsoft.Dynamics.NAV.InvokeExtensibilityMethod = bridge;
+            fixture.payload = original;
+            LoadSchedule(original);
+        }
+    };
+    window.fixture.assertDragDatesAndDue = function () {
+        const original = structuredClone(fixture.payload);
+        const bridge = Microsoft.Dynamics.NAV.InvokeExtensibilityMethod;
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        const requests = [];
+        const assertGuides = (axis, start, end) => {
+            const overlay = document.querySelector(".cf-drag-dates");
+            const bounds = overlay.getBoundingClientRect();
+            assert(getComputedStyle(overlay).position === "absolute" &&
+                getComputedStyle(overlay).backgroundColor === "rgba(0, 0, 0, 0)",
+                "Drag dates still use a floating popup");
+            for (const [kind, value] of [["start", start], ["finish", end]]) {
+                const marker = overlay.querySelector(`.cf-drag-${kind}`);
+                const rect = marker.getBoundingClientRect();
+                const expected = bounds.left + CFSchedulerCore.axisPosition(axis,
+                    CFSchedulerCore.parseCivil(value)) / axis.duration * bounds.width;
+                assert(marker.dataset.time === value && Math.abs(rect.left - expected) < 1,
+                    `${kind} guide does not align with its operation time`);
+                assert(Math.abs(rect.height - bounds.height) < 1 && parseFloat(getComputedStyle(marker).borderLeftWidth) > 0,
+                    `${kind} guide does not span the timeline`);
+                const label = marker.querySelector(".cf-drag-date-label").getBoundingClientRect();
+                assert(label.left >= bounds.left - 1 && label.right <= bounds.right + 1,
+                    `${kind} label runs outside the timeline`);
+            }
+            assert(overlay.querySelector(".cf-drag-start span").getBoundingClientRect().bottom <
+                overlay.querySelector(".cf-drag-finish span").getBoundingClientRect().top,
+                "Start and finish labels overlap instead of appearing above and below the operation");
+        };
+        Microsoft.Dynamics.NAV.InvokeExtensibilityMethod = (name, args, skip, success, failure) => {
+            requests.push({ name, args, failure });
+            if (name !== "OperationStartChangeRequested") success();
+        };
+        try {
+            const p = structuredClone(original);
+            for (const viewMode of ["hour", "day", "week", "month"]) {
+                p.viewMode = viewMode;
+                fixture.payload = p;
+                LoadSchedule(p);
+                document.querySelector('[data-operation="op-a"]').click();
+                const marker = document.querySelector(".cf-required-due");
+                assert(marker && Math.abs(parseFloat(marker.style.left) - 200 / 3) < 0.0001,
+                    "Due date is not at the end of its day");
+                assert(marker.textContent.includes(p.operations[0].order) &&
+                    marker.textContent.includes("2026-11-04 24:00"), "Due marker omits selected order/date");
+                const lane = document.querySelector('[data-resource="M:100"] .cf-lane');
+                const bounds = lane.getBoundingClientRect();
+                const axis = CFSchedulerCore.timeAxis(viewMode, CFSchedulerCore.parseCivil(p.start),
+                    CFSchedulerCore.parseCivil(p.end));
+                const x = bounds.left + bounds.width / 2;
+                const transfer = new DataTransfer();
+                const unscheduled = document.querySelector('[data-operation="op-p"]');
+                unscheduled.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+                lane.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true,
+                    dataTransfer: transfer, clientX: x, clientY: bounds.top + 10 }));
+                const start = CFSchedulerCore.droppedAxisStart(axis, x - bounds.left, bounds.width);
+                const preview = CFSchedulerCore.dragPreview(p.operations.find(item => item.id === "op-p"), start);
+                assertGuides(axis, preview.start, preview.end);
+                unscheduled.dispatchEvent(new DragEvent("dragend", { bubbles: true, dataTransfer: transfer }));
+                assert(!document.querySelector(".cf-drag-dates"), "Cancelled drop retained guide lines");
+            }
+            p.viewMode = "hour";
+            p.dragSnapMinutes = 1;
+            fixture.payload = p;
+            LoadSchedule(p);
+            const lane = document.querySelector('[data-resource="M:100"] .cf-lane');
+            const bounds = lane.getBoundingClientRect();
+            const axis = CFSchedulerCore.timeAxis("hour", CFSchedulerCore.parseCivil(p.start), CFSchedulerCore.parseCivil(p.end));
+            const start = "2026-11-03T08:07:00";
+            const x = bounds.left + CFSchedulerCore.axisPosition(axis, CFSchedulerCore.parseCivil(start)) / axis.duration * bounds.width;
+            const transfer = new DataTransfer();
+            document.querySelector('[data-operation="op-p"]').dispatchEvent(new DragEvent("dragstart", {
+                bubbles: true, cancelable: true, dataTransfer: transfer
+            }));
+            lane.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true,
+                dataTransfer: transfer, clientX: x, clientY: bounds.top + 10 }));
+            assert(document.querySelector(".cf-drag-dates").textContent.includes("2026-11-03 08:07:00"),
+                "Minute-level preview was rounded to a 15-minute boundary");
+            assertGuides(axis, start, CFSchedulerCore.dragPreview(p.operations.find(item => item.id === "op-p"), start).end);
+            lane.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true,
+                dataTransfer: transfer, clientX: x, clientY: bounds.top + 10 }));
+            const request = requests.findLast(item => item.name === "OperationStartChangeRequested");
+            assert(request.args[2] === start, "Drop request did not use configured minute precision");
+            request.failure();
+            assert(!document.querySelector(".cf-drag-dates"), "Rejected drop retained its estimated dates");
+            return { dueMarkerViews: 4, verticalGuideViews: 4, minuteSnapPreviewAndRequest: true, rejectedDropCleanup: true };
+        } finally {
+            Microsoft.Dynamics.NAV.InvokeExtensibilityMethod = bridge;
+            fixture.payload = original;
+            LoadSchedule(original);
+        }
+    };
     window.fixture.assertOperationStacking = async function () {
         const original = structuredClone(fixture.payload);
         const baseline = JSON.stringify(fixture.bcOperations);
@@ -792,6 +1025,8 @@
     };
     window.fixture.assertPlacementAndDrag = async function () {
         const original = structuredClone(window.fixture.payload);
+        const originalDelay = fixture.saveDelay;
+        fixture.saveDelay = 300;
         const p = structuredClone(original);
         const baseline = JSON.stringify(window.fixture.bcOperations);
         const assert = (condition, message) => { if (!condition) throw new Error(message); };
@@ -839,7 +1074,7 @@
                     assert(bar("op-a") && !pending("op-a"), "Scheduled step must appear only on the timeline");
                     const axis = CFSchedulerCore.timeAxis(view, CFSchedulerCore.parseCivil(p.start),
                         CFSchedulerCore.parseCivil(p.end));
-                    assert(Math.abs(parseFloat(pending("op-p").style.width) -
+                    assert(Math.abs(Number(pending("op-p").style.width.match(/([\d.]+)%/)[1]) -
                         p.operations.find(item => item.id === "op-p").workMinutes * CFSchedulerCore.minute / axis.duration * 100) < 0.00001,
                         "Unscheduled operation width does not represent its work duration");
                     disjoint();
@@ -875,10 +1110,30 @@
             const x = rect.left + core.axisPosition(axis, core.parseCivil("2026-11-03T09:30:00")) / axis.duration * rect.width;
             const transfer = new DataTransfer();
             pending("op-p").dispatchEvent(new DragEvent("dragstart", {dataTransfer: transfer, bubbles: true, cancelable: true}));
+            lane.dispatchEvent(new DragEvent("dragover", {dataTransfer: transfer, clientX: x, clientY: rect.top + 10, bubbles: true, cancelable: true}));
+            assert(document.querySelector(".cf-drag-dates").textContent.includes("Requested start: 2026-11-03 09:30:00") &&
+                document.querySelector(".cf-drag-dates").textContent.includes("Estimated finish"),
+                "Unscheduled drag omitted live requested start and estimated finish");
+            assert(document.querySelector(".cf-required-due")?.textContent.includes("2026-11-04 24:00"),
+                "Selected order required due date was not shown during drag");
             lane.dispatchEvent(new DragEvent("drop", {dataTransfer: transfer, clientX: x, bubbles: true, cancelable: true}));
             assert(pending("op-p") && !bar("op-p"), "The step moved before AL accepted the drop");
+            assert(lane.querySelector(".cf-saving-position") &&
+                document.getElementById("controlAddIn").getAttribute("aria-busy") === "true",
+                "Drop preview disappeared before AL accepted the change");
+            const previewBounds = lane.querySelector(".cf-saving-position").getBoundingClientRect();
+            assert(previewBounds.bottom <= lane.getBoundingClientRect().bottom + 0.1,
+                "Pending drop preview is clipped by its lane");
+            assert(document.querySelector(".cf-drag-finish span").getBoundingClientRect().top >= previewBounds.bottom,
+                "Estimated finish label covers the pending operation instead of sitting below it");
+            await new Promise(resolve => setTimeout(resolve, 100));
+            assert(lane.querySelector(".cf-saving-position") &&
+                lane.querySelector(".cf-saving-position").getBoundingClientRect().bottom <= lane.getBoundingClientRect().bottom + 0.1,
+                "Resize processing removed or clipped the pending drop preview");
             await settle();
             assert(!pending("op-p") && bar("op-p"), "Successful drop did not transfer the step to the timeline");
+            assert(!document.querySelector(".cf-saving-position"), "Successful drop retained a pending preview");
+            assert(!document.querySelector(".cf-drag-dates"), "Successful drop retained live drag dates");
             disjoint();
             lane = document.querySelector('[data-resource="M:100"] .cf-lane');
             rect = lane.getBoundingClientRect();
@@ -895,9 +1150,17 @@
             assert(!node.classList.contains("cf-dragging"), "Another pointer moved the selected step");
             pointer(node, "pointermove", origin + delta);
             assert(node.classList.contains("cf-dragging"), "Individual timeline step did not enter drag mode");
+            assert(document.querySelector(".cf-drag-dates")?.textContent.includes("Estimated finish"),
+                "Timeline drag omitted its live date labels");
             pointer(node, "pointerup", origin + delta);
             assert(p.operations[0].start === start, "Timeline drag optimistically changed the stored start");
+            assert(node.classList.contains("cf-saving-position") && node.style.transform !== "",
+                "Timeline drag snapped back before the save response");
+            await new Promise(resolve => setTimeout(resolve, 100));
+            assert(node.classList.contains("cf-saving-position") && node.style.transform !== "" &&
+                p.operations[0].start === start, "Delayed save withdrew the pending move or changed stored dates");
             await settle();
+            assert(!document.querySelector(".cf-saving-position"), "Accepted move retained a pending transform");
             const expected = core.draggedAxisStart(axis, core.parseCivil(start), delta, rect.width);
             assert(requests().length === count + 1 &&
                 JSON.stringify(requests().at(-1).args) === JSON.stringify(["op-a", version, expected]),
@@ -906,6 +1169,20 @@
                 JSON.stringify(p.operations.slice(1).map(item => [item.id, item.start, item.end])) === others,
                 "Client dragged a group instead of the selected step");
             disjoint();
+            node = bar("op-a");
+            preparePointer(node);
+            const failedStart = p.operations[0].start;
+            fixture.failNext = true;
+            pointer(node, "pointerdown", origin);
+            pointer(node, "pointermove", origin + delta);
+            pointer(node, "pointerup", origin + delta);
+            assert(node.classList.contains("cf-saving-position"), "Failed move had no initial preview");
+            await settle();
+            assert(node.style.transform === "" && !node.classList.contains("cf-saving-position") &&
+                p.operations[0].start === failedStart, "Failed move did not restore the original position");
+            assert(!document.querySelector(".cf-drag-dates"), "Failed move retained misleading drag dates");
+            assert(!document.querySelector(".cf-banner").hidden, "Failed move was not reported");
+            LoadSchedule(p);
             for (const cancellation of ["Escape", "pointercancel", "lostpointercapture"]) {
                 node = bar("op-a");
                 preparePointer(node);
@@ -917,6 +1194,7 @@
                 pointer(node, "pointerup", origin + delta);
                 assert(!node.classList.contains("cf-dragging") && node.style.transform === "" &&
                     requests().length === before, `${cancellation} did not cancel the timeline drag cleanly`);
+                assert(!document.querySelector(".cf-drag-dates"), `${cancellation} retained drag dates`);
             }
             p.operations[0].editable = false;
             LoadSchedule(p);
@@ -931,6 +1209,7 @@
             return {exclusivePlacement: true, views: 4, documentFocus: true, pendingDrop: true,
                 timelineDrag: true, cancellations: 3, viewport: [innerWidth, innerHeight]};
         } finally {
+            fixture.saveDelay = originalDelay;
             window.fixture.payload = original;
             LoadSchedule(original);
         }
@@ -1680,7 +1959,8 @@
             SelectOperations("clear");
             assert(document.querySelector(".cf-selection").getAttribute("role") === "toolbar", "Selection controls need a toolbar role");
             assert(count() === "0 selected" && toolbarButton("chain").disabled, "Selection actions need a selection");
-            assert(document.querySelector(".cf-lock-selected").disabled, "Lock needs a selection");
+            assert(document.querySelector(".cf-lock-selected").hidden &&
+                document.querySelector(".cf-unlock-selected").hidden, "Position actions need a selection");
             click("op-a");
             await settle();
             assert(count() === "1 selected" && node("op-a").classList.contains("cf-selected"), "Plain click selects one step");
@@ -1713,6 +1993,8 @@
                 root.querySelector(".cf-banner").textContent === p.labels.invalidSelectionCommand, "Unknown commands are reported");
             const lock = document.querySelector(".cf-lock-selected");
             assert(!lock.disabled && document.querySelector(".cf-unlock-selected").disabled, "Lock enabled only for unlocked steps");
+            assert(!lock.hidden && document.querySelector(".cf-unlock-selected").hidden,
+                "Unlocked selection should show only Lock Position Selected");
             const versions = [opA.version, opP.version];
             lock.click();
             assert(status().textContent === p.labels.saving && !status().hidden, "Mutation must show Saving");
@@ -1722,6 +2004,8 @@
                 "Lock request sends versioned operations");
             assert(status().textContent === p.labels.saved, "Reloaded payload confirms the save");
             assert(JSON.stringify(selected()) === JSON.stringify(["op-a", "op-p"]), "Selection survives the reload");
+            assert(document.querySelector(".cf-lock-selected").hidden && !document.querySelector(".cf-unlock-selected").hidden,
+                "Locked selection should show only Unlock Position Selected");
             const locked = node("op-a");
             const icon = locked.querySelector(".cf-lock-icon");
             assert(icon && getComputedStyle(icon).pointerEvents === "none" && icon.getAttribute("aria-hidden") === "true",
@@ -1738,6 +2022,14 @@
             locked.dispatchEvent(new PointerEvent("pointerup", {bubbles: true, pointerId: 31, clientX: rect.left + 80}));
             await settle();
             assert(window.fixture.calls.filter(entry => entry.name === "OperationStartChangeRequested").length === before, "Locked drag must not save");
+            assert(!root.querySelector(".cf-banner").hidden && root.querySelector(".cf-banner").textContent === p.labels.lockedNoEdit,
+                "Locked timeline drag must explain how to unlock the position");
+            const pendingLocked = node("op-p");
+            pendingLocked.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, isPrimary: true,
+                pointerId: 32, clientX: 20, clientY: 20 }));
+            pendingLocked.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId: 32, clientX: 40, clientY: 20 }));
+            assert(root.querySelector(".cf-banner").textContent === p.labels.lockedNoEdit && !pendingLocked.draggable,
+                "Locked unscheduled drag must explain the position lock without enabling dragging");
             click("op-a");
             await settle();
             assert([...document.querySelectorAll(".cf-details [data-mutation]")].find(entry => entry.textContent === p.labels.schedule).disabled,
@@ -1756,6 +2048,8 @@
             SelectOperations("chain");
             assert(!document.querySelector(".cf-lock-selected").disabled && !document.querySelector(".cf-unlock-selected").disabled,
                 "Mixed selections can lock the unlocked and unlock the locked steps");
+            assert(!document.querySelector(".cf-lock-selected").hidden && !document.querySelector(".cf-unlock-selected").hidden,
+                "Mixed selections must offer both applicable position actions");
             const viewer = structuredClone(p);
             for (const item of viewer.operations) Object.assign(item, {canLock: false, canUnlock: false});
             LoadSchedule(viewer);
@@ -1893,7 +2187,7 @@
                     window.LoadSchedule(payload);
                 }
                 success();
-            }, 50);
+            }, name === "OperationStartChangeRequested" ? (fixture.saveDelay ?? 50) : 50);
         }
     } } };
 }());

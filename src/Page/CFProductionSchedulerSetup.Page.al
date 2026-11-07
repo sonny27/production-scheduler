@@ -62,6 +62,11 @@ page 91301 CF_ProductionSchedulerSetup
                     ApplicationArea = Manufacturing;
                     ToolTip = 'Specifies whether new or increased daily overload is blocked or requires confirmation. This is not interval-level finite scheduling.';
                 }
+                field(FirmPlannedOnCommit; Rec.FirmPlannedOnCommit)
+                {
+                    ApplicationArea = Manufacturing;
+                    ToolTip = 'Specifies whether a successful scheduler commit converts a Planned production order to Firm Planned when every unfinished operation is planner-approved, including approval of unchanged BC dates. Enabled by default. BC number series may assign a new order number. Partial approvals and other statuses are not converted. A conversion failure rolls back the whole order.';
+                }
             }
             group(AutomaticScheduling)
             {
@@ -85,6 +90,11 @@ page 91301 CF_ProductionSchedulerSetup
                 {
                     ApplicationArea = Manufacturing;
                     ToolTip = 'Specifies the scheduling and navigation horizon, from 1 to 365 days. The bottom ruler moves the visible window within this range. Auto Schedule never saves an operation outside the remaining range.';
+                }
+                field(DragSnapMinutes; Rec.DragSnapMinutes)
+                {
+                    ApplicationArea = Manufacturing;
+                    ToolTip = 'Specifies the drag-and-drop time increment, from 1 to 1440 minutes. Defaults to 15 minutes. Set 1 for minute-level placement. Timeline moves snap relative to the existing start; new placements snap to clock intervals. Calendars, capacity, dependencies and locks still apply; the saved time may be adjusted by scheduling.';
                 }
             }
         }

@@ -15,8 +15,8 @@ page 91311 CF_ScheduleCommitResults
         {
             repeater(ResultLines)
             {
-                field(Status; Rec.Status) { ApplicationArea = Manufacturing; ToolTip = 'Specifies the production order status.'; }
-                field(OrderNo; Rec.OrderNo) { ApplicationArea = Manufacturing; ToolTip = 'Specifies the production order.'; }
+                field(Status; Rec.Status) { ApplicationArea = Manufacturing; ToolTip = 'Specifies the resulting BC status after a successful commit, or the original status on failure. Fully approved Planned orders may be converted to Firm Planned according to setup.'; }
+                field(OrderNo; Rec.OrderNo) { ApplicationArea = Manufacturing; ToolTip = 'Specifies the resulting BC order number after a successful commit, or the original number on failure. BC number series may assign a new number during status conversion; the result describes both numbers.'; }
                 field(Scheduled; Rec.Scheduled) { ApplicationArea = Manufacturing; Caption = 'Committed'; ToolTip = 'Specifies whether the entire order was committed successfully.'; }
                 field(Result; Rec.Result) { ApplicationArea = Manufacturing; Style = Attention; StyleExpr = Failed; ToolTip = 'Specifies the outcome. A failed order was rolled back; other orders can succeed.'; }
             }

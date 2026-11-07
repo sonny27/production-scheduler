@@ -14,6 +14,20 @@ const routingOperation = (id, values = {}) => ({
 
 const alSource = (folder, file) => fs.readFileSync(path.join(__dirname, "..", "src", folder, file), "utf8");
 
+test("approval display filters use committed approval rather than draft confirmation", () => {
+    const item = { order: "ORDER", item: "ITEM", operation: "10", description: "Cut", problems: [], confirmed: true, approved: false };
+    assert.equal(core.operationVisible(item, "", true, 1), false);
+    assert.equal(core.operationVisible(item, "", true, 2), true);
+    assert.equal(core.operationVisible(item, "", true, 0), true);
+    item.approved = true;
+    item.confirmed = false;
+    assert.equal(core.operationVisible(item, "", true, 1), true);
+    assert.equal(core.operationVisible(item, "", true, 2), false);
+    assert.equal(core.operationVisible(item, "missing", true, 1), false);
+    item.problems = ["Conflict"];
+    assert.equal(core.operationVisible(item, "", false, 1), false);
+});
+
 test("Open BC Routing context action reuses the standard order routing navigation", () => {
     const page = alSource("Page", "CFProductionScheduler.Page.al");
     const mgt = alSource("Codeunit", "CFProductionSchedulerMgt.Codeunit.al");
@@ -240,7 +254,7 @@ test("scheduler instructions are available through the native Actions help comma
     assert.ok(page.includes("action(HowToUseScheduler)"));
     assert.ok(page.includes("Caption = 'How to Use Scheduler'"));
     assert.ok(page.includes("Mgt.ShowHelp()"));
-    assert.ok(mgt.includes("Message(HelpLbl + '\\\\' + WorkingDisplayHelpLbl + '\\\\' + SelectionHelpLbl, ScopeLbl, TimeZoneLbl, LegendLbl, DropHelpLbl)"));
+    assert.ok(mgt.includes("Message(HelpLbl + '\\\\' + WorkingDisplayHelpLbl + '\\\\' + SelectionHelpLbl, ScopeLbl, TimeZoneLbl, LegendLbl + ' ' + ApprovalStyleLbl, DropHelpLbl)"));
 });
 
 test("AL civil time serialization zero-pads hours before strict drag request round-trip validation", () => {
@@ -648,6 +662,12 @@ test("overlap includes operations starting before the viewport and excludes exac
     assert.deepEqual(core.clip(50, 200, 0, 100), { left: 50, width: 50 });
 });
 
+test("hour header formats the next midnight as 24:00 without changing hour tick times", () => {
+    const scheduler = fs.readFileSync(path.join(__dirname, "..", "src", "ControlAddIn", "scheduler.js"), "utf8");
+    assert.match(scheduler, /window\.end === period\.end && window\.end % core\.day === 0\s+\? "24:00" : clockTime\(window\.end\)/);
+    assert.match(scheduler, /level\.unit === "hour" \? clockTime\(period\.start\)/);
+});
+
 test("overlapping operations stack and adjacent operations reuse tracks", () => {
     const make = (id, from, to) => ({ id, start: `2026-11-03T${from}:00:00`, end: `2026-11-03T${to}:00:00` });
     const items = [make("A", "08", "10"), make("B", "09", "11"), make("C", "10", "12")];
@@ -708,6 +728,44 @@ test("drag snaps the delta to 15 minutes without changing seconds or original st
     assert.equal(core.draggedStart(start, 15, 1440, core.day), "2026-11-03T08:22:30");
     assert.equal(core.draggedStart(start, -30, 1440, core.day), "2026-11-03T07:37:30");
     assert.equal(core.draggedStart(start, 10, 0, core.day), "");
+});
+
+test("drag snap is configurable for regular and compressed axes, with fifteen minutes as default", () => {
+    const start = core.parseCivil("2026-11-03T00:00:00");
+    const axis = core.timeAxis("hour", start, start + core.day);
+    assert.equal(core.draggedAxisStart(axis, start + 8 * 60 * core.minute, 7, 1440, 1), "2026-11-03T08:07:00");
+    assert.equal(core.draggedAxisStart(axis, start + 8 * 60 * core.minute, 7, 1440), "2026-11-03T08:00:00");
+    assert.equal(core.droppedAxisStart(axis, 487, 1440, 5), "2026-11-03T08:05:00");
+    assert.equal(core.droppedAxisStart(axis, 487, 1440, 1), "2026-11-03T08:07:00");
+    assert.equal(core.draggedAxisStart(axis, start, -10, 1440, 1), "");
+    const compressed = core.timeAxis("hour", start, start + 3 * core.day, undefined, ["2026-11-03", "2026-11-05"]);
+    assert.equal(core.droppedAxisStart(compressed, 1447, 2880, 1), "2026-11-05T00:07:00");
+    assert.equal(core.draggedAxisStart(compressed, start + 23 * 60 * core.minute, 67, 2880, 1), "2026-11-05T00:07:00");
+    for (const invalid of [0, -1, 1.5, 1441, NaN]) {
+        assert.throws(() => core.droppedAxisStart(axis, 0, 100, invalid), RangeError);
+        assert.throws(() => core.draggedAxisStart(axis, start, 1, 100, invalid), RangeError);
+    }
+});
+
+test("drag preview is an estimate and preserves stored dates", () => {
+    const item = { start: "2026-11-03T08:00:00", end: "2026-11-04T10:00:00", confirmed: true, workMinutes: 120 };
+    assert.deepEqual(core.dragPreview(item, "2026-11-05T09:15:00"),
+        { start: "2026-11-05T09:15:00", end: "2026-11-06T11:15:00" });
+    assert.deepEqual(core.dragPreview({ ...item, confirmed: false }, "2026-11-05T09:15:00"),
+        { start: "2026-11-05T09:15:00", end: "2026-11-05T11:15:00" });
+    assert.deepEqual(core.dragPreview({ workMinutes: 30 }, "2026-11-05T09:15:00"),
+        { start: "2026-11-05T09:15:00", end: "2026-11-05T09:45:00" });
+    assert.equal(item.start, "2026-11-03T08:00:00");
+});
+
+test("required due date uses end of day including hidden days and viewport end", () => {
+    const start = core.parseCivil("2026-11-03T00:00:00");
+    const axis = core.timeAxis("day", start, start + 3 * core.day);
+    assert.ok(Math.abs(core.dueDatePosition(axis, "2026-11-03") - 100 / 3) < 0.000001);
+    assert.equal(core.dueDatePosition(axis, "2026-11-05"), 100);
+    for (const due of ["", "2026-02-30", "2026-11-02", "2026-11-06"]) assert.equal(core.dueDatePosition(axis, due), null);
+    const compressed = core.timeAxis("day", start, start + 3 * core.day, undefined, ["2026-11-03", "2026-11-05"]);
+    assert.equal(core.dueDatePosition(compressed, "2026-11-04"), 50);
 });
 
 test("date entry supports minute and second precision but rejects blank or invalid values", () => {

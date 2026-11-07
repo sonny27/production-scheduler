@@ -18,6 +18,8 @@
     let clockTimer;
     let pendingDrag;
     let dropPreview;
+    let pendingMove;
+    let dragDates;
     let selectedId = "";
     let selectedIds = [];
     let draftStatus = { state: "", text: "" };
@@ -78,6 +80,9 @@
         if (root) root.querySelectorAll(".cf-navigation input").forEach(node => {
             node.disabled = value || node.max === "0";
         });
+        if (root) root.querySelectorAll(".cf-search input, .cf-summary button").forEach(node => {
+            node.disabled = value;
+        });
         if (root) root.querySelectorAll(".cf-pending-item").forEach(node => {
             node.draggable = !value && !stale && node.dataset.canDrag === "true";
         });
@@ -90,8 +95,10 @@
         hideTooltip();
         closeContextMenu(false);
         cancelPendingDrag();
+        clearPendingMove();
+        clearDragDates();
         stale = true;
-        if (root) root.querySelectorAll(".cf-current-time, .cf-time-overlay").forEach(node => node.remove());
+        if (root) root.querySelectorAll(".cf-current-time, .cf-time-overlay, .cf-due-overlay").forEach(node => node.remove());
         lastError = message;
         if (pendingSave || draftStatus.state === "saving") setDraftStatus("failed", "");
         if (!banner) return;
@@ -111,6 +118,7 @@
     function setDraftStatus(state, text) {
         clearTimeout(pendingSaveTimer);
         if (state === "error") state = "failed";
+        if (state === "failed") clearPendingMove();
         pendingSave = state === "saving";
         draftStatus = { state, text: text || (state ? label(state === "failed" ? "saveFailed" : state) : "") };
         renderDraftStatus();
@@ -141,10 +149,13 @@
         try {
             bridge.InvokeExtensibilityMethod(name, args, false,
                 function () {
-                    if (currentGeneration === generation) setBusy(false);
+                    if (currentGeneration === generation && !pendingMove) setBusy(false);
                     // Only a reloaded payload or SetDraftStatus confirms a save; otherwise withdraw "saving" without claiming success.
                     if (saving && pendingSave) pendingSaveTimer = setTimeout(function () {
-                        if (pendingSave && currentGeneration === generation) setDraftStatus("", "");
+                        if (pendingSave && currentGeneration === generation) {
+                            if (pendingMove) error(label("failed"));
+                            else setDraftStatus("", "");
+                        }
                     }, 2000);
                 },
                 function () {
@@ -193,7 +204,7 @@
 
     function activeItem() {
         return payload.operations.find(item => item.id === selectedId &&
-            (payload.includeProblemSteps || item.problems.length === 0));
+            matchesView(item));
     }
 
     function selectedItems() {
@@ -209,6 +220,7 @@
         root.querySelectorAll("[data-operation]").forEach(node => markSelection(node, node.dataset.operation));
         renderDetails(activeItem());
         renderRoutingLinks();
+        renderDueDate();
         renderSelectionToolbar();
         saveViewState();
     }
@@ -217,13 +229,17 @@
         const toolbar = root?.querySelector(".cf-selection");
         if (!toolbar || !payload) return;
         const items = selectedItems();
-        toolbar.hidden = !payload.scenario || (!items.length && !draftStatus.text);
+        toolbar.hidden = !payload.scenario || (!items.length && !draftStatus.text && !payload.documentFocus);
         toolbar.querySelector(".cf-selection-count").textContent = label("selectedCount").replace("%1", String(items.length));
         for (const locked of [true, false]) {
             const changes = lockChanges(items, locked);
-            toolbar.querySelector(locked ? ".cf-lock-selected" : ".cf-unlock-selected").dataset.allowed =
-                String(changes.length > 0 && changes.every(item => canLock(item, locked)));
+            const control = toolbar.querySelector(locked ? ".cf-lock-selected" : ".cf-unlock-selected");
+            control.hidden = changes.length === 0;
+            control.dataset.allowed = String(changes.length > 0 && changes.every(item => canLock(item, locked)));
         }
+        const documentZoom = toolbar.querySelector(".cf-document-zoom");
+        documentZoom.textContent = label(payload.documentFocus ? "unzoomDocument" : "zoomDocument");
+        documentZoom.dataset.allowed = String(payload.documentFocus || Boolean(activeItem()));
         toolbar.querySelectorAll("[data-mutation]").forEach(node => {
             node.disabled = busy || stale || node.dataset.allowed !== "true";
         });
@@ -396,18 +412,20 @@
         const actions = [
             ["details", "draftDetails", true],
             ["edit", "editDraft", item.editable && !item.positionLocked],
-            ["zoom", "zoomDocument", true],
+            [payload.documentFocus ? "unzoom" : "zoom", payload.documentFocus ? "unzoomDocument" : "zoomDocument", true],
             ["reset", "resetDraft", item.canReset === true],
             ["commit", "commitOrder", item.canCommit === true],
             ["order", "order", true],
             ["bcRouting", "openBCRouting", true]
         ];
+        if (item.problems.length) actions.unshift(["problems", "problemDetails", true]);
         if (payload.scenario) actions.push(item.positionLocked
             ? ["unlock", "unlockStep", canLock(item, false)] : ["lock", "lockStep", canLock(item, true)]);
         for (const [command, caption, allowed] of actions) {
             const control = mutationButton(label(caption), () => {
                 closeContextMenu(false);
-                if (command === "lock" || command === "unlock") requestLocks([item], command === "lock");
+                if (command === "problems") showProblemDetails(item, owner);
+                else if (command === "lock" || command === "unlock") requestLocks([item], command === "lock");
                 else invoke("OperationContextRequested", [item.id, item.version, command]);
             }, allowed);
             control.className = "";
@@ -459,6 +477,23 @@
         container.append(list);
     }
 
+    function showProblemDetails(item, owner) {
+        hideTooltip();
+        const dialog = element("dialog", "cf-problem-dialog");
+        const heading = element("h3", "", label("problemDetails"));
+        heading.id = "cf-problem-dialog-title";
+        dialog.setAttribute("aria-labelledby", heading.id);
+        dialog.append(heading, element("p", "", `${item.order} / ${item.operation} - ${item.description}`));
+        appendProblems(dialog, item);
+        dialog.append(button(label("close"), () => dialog.close()));
+        listen(dialog, "close", () => {
+            dialog.remove();
+            if (owner.isConnected) owner.focus({ preventScroll: true });
+        });
+        root.append(dialog);
+        dialog.showModal();
+    }
+
     function clockTime(value) {
         return core.formatCivil(value).slice(11).replace(/:00$/, "");
     }
@@ -482,6 +517,11 @@
         hideTooltip();
         tooltipOwner = owner;
         tooltip.replaceChildren(element("h3", "", label("operationDetails")));
+        const badges = element("div", "cf-operation-statuses");
+        badges.append(element("span", `cf-status-badge cf-approval-${item.approved === true ? "approved" : "unapproved"}`,
+            label(item.approved === true ? "approvedStatus" : "unapprovedStatus")));
+        if (item.problems.length) badges.append(element("span", "cf-status-badge cf-approval-problem", label("problem")));
+        tooltip.append(badges);
         function fields(values) {
             const list = element("dl", "cf-tooltip-fields");
             for (const [name, value] of values) {
@@ -543,10 +583,34 @@
             if (owner.matches(":focus-visible")) showTooltip(item, owner, warning);
         });
         listen(owner, "blur", hideTooltip);
-        listen(owner, "pointerdown", hideTooltip);
+        listen(owner, "pointerdown", event => {
+            hideTooltip();
+            if (!item.positionLocked || busy || stale || event.button !== 0 || event.isPrimary === false || additive(event)) return;
+            const originX = event.clientX;
+            const originY = event.clientY;
+            function cleanup() {
+                document.removeEventListener("pointermove", move);
+                document.removeEventListener("pointerup", end);
+                document.removeEventListener("pointercancel", end);
+            }
+            function end(endEvent) {
+                if (endEvent.pointerId === event.pointerId) cleanup();
+            }
+            function move(moveEvent) {
+                if (moveEvent.pointerId !== event.pointerId ||
+                    Math.hypot(moveEvent.clientX - originX, moveEvent.clientY - originY) <= 5) return;
+                cleanup();
+                select(item, false);
+                notice(label("lockedNoEdit"));
+            }
+            document.addEventListener("pointermove", move, { signal: controller.signal });
+            document.addEventListener("pointerup", end, { signal: controller.signal });
+            document.addEventListener("pointercancel", end, { signal: controller.signal });
+        });
     }
 
     function stackLane(lane, placed) {
+        if (pendingMove) return;
         const width = lane.getBoundingClientRect().width;
         if (width <= 0) return;
         const stacked = core.stackRenderedOperations(placed, width);
@@ -573,7 +637,7 @@
                 event => select(item, true, additive(event) ? "toggle" : "replace"),
                 "cf-unscheduled-operation cf-pending cf-pending-item");
             bar.style.left = entry.left + "%";
-            bar.style.width = `max(12px, ${entry.width}%)`;
+            bar.style.width = `max(14px, ${entry.width}%)`;
             bar.style.top = (entry.track * 34 + 4) + "px";
             bar.dataset.operation = item.id;
             bar.dataset.canDrag = String(canDrag);
@@ -588,6 +652,7 @@
             listen(bar, "dragstart", event => {
                 if (busy || stale || !canDrag || !event.dataTransfer) {
                     event.preventDefault();
+                    if (item.positionLocked && !busy && !stale) notice(label("lockedNoEdit"));
                     return;
                 }
                 hideTooltip();
@@ -613,7 +678,7 @@
     }
 
     function matchesView(item) {
-        return core.operationVisible(item, search, payload.includeProblemSteps);
+        return core.operationVisible(item, search, payload.includeProblemSteps, payload.approvalFilter ?? 0);
     }
 
     function workCenterId(item) {
@@ -630,9 +695,78 @@
         }
     }
 
+    function clearPendingMove() {
+        if (!pendingMove) return;
+        for (const node of pendingMove.nodes) {
+            node.style.transform = "";
+            node.classList.remove("cf-saving-position");
+        }
+        pendingMove.preview?.remove();
+        if (pendingMove.lane) pendingMove.lane.style.height = pendingMove.height;
+        pendingMove = undefined;
+        clearDragDates();
+        renderRoutingLinks();
+    }
+
+    function previewPendingDrop(drop) {
+        const start = core.parseCivil(drop.start);
+        const duration = Number.isFinite(drop.item.workMinutes) ? drop.item.workMinutes * core.minute
+            : Math.max(0, core.parseCivil(drop.item.end) - core.parseCivil(drop.item.start));
+        const position = core.axisClip(currentAxis, start, start + duration);
+        const preview = element("div", "cf-operation cf-saving-position",
+            `${drop.item.order} / ${drop.item.operation}`);
+        preview.style.left = (position?.left ?? core.axisPosition(currentAxis, start) / currentAxis.duration * 100) + "%";
+        preview.style.width = `max(14px, ${position?.width ?? 0}%)`;
+        const height = drop.lane.style.height;
+        preview.style.top = drop.lane.clientHeight + "px";
+        drop.lane.style.height = (drop.lane.clientHeight + 34) + "px";
+        drop.lane.append(preview);
+        pendingMove = { nodes: [], preview, lane: drop.lane, height };
+    }
+
+    function clearDragDates() {
+        dragDates?.remove();
+        dragDates = undefined;
+    }
+
+    function showDragDates(item, start, lane, bar) {
+        clearDragDates();
+        if (!start) return;
+        const grid = board.querySelector(".cf-grid");
+        const gridBounds = grid.getBoundingClientRect();
+        const laneBounds = lane.getBoundingClientRect();
+        const barBounds = bar?.getBoundingClientRect();
+        const top = (barBounds?.top ?? laneBounds.top) - gridBounds.top;
+        const bottom = (barBounds?.bottom ?? laneBounds.top + 27) - gridBounds.top;
+        const preview = core.dragPreview(item, start);
+        dragDates = element("div", "cf-drag-dates");
+        dragDates.setAttribute("role", "status");
+        grid.append(dragDates);
+        function guide(value, kind, caption, labelTop) {
+            if (!value) return;
+            const time = core.parseCivil(value);
+            const position = Math.max(0, Math.min(100, core.axisPosition(currentAxis, time) / currentAxis.duration * 100));
+            const marker = element("div", `cf-drag-guide cf-drag-${kind}`);
+            marker.dataset.time = value;
+            marker.style.left = position === 100 ? "calc(100% - 2px)" : position + "%";
+            marker.classList.toggle("cf-drag-clipped", time < currentAxis.start || time > currentAxis.end);
+            const text = element("span", "cf-drag-date-label", `${caption}: ${displayDate(value)}`);
+            text.style.top = Math.max(0, Math.min(dragDates.clientHeight - 22, labelTop)) + "px";
+            text.style.maxWidth = laneBounds.width + "px";
+            marker.append(text);
+            dragDates.append(marker);
+            const textWidth = text.getBoundingClientRect().width;
+            const x = position / 100 * laneBounds.width;
+            text.style.left = Math.max(-x, Math.min(-textWidth / 2, laneBounds.width - x - textWidth)) + "px";
+        }
+        guide(preview.start, "start", label("requestedStart"), top - 22);
+        guide(preview.end, "finish", label("estimatedFinish"), bottom + 2);
+    }
+
     function cancelPendingDrag() {
         pendingDrag = undefined;
         clearDropPreview();
+        if (!pendingMove) clearDragDates();
         const help = root?.querySelector(".cf-drop-help");
         if (help) {
             help.textContent = "";
@@ -647,7 +781,7 @@
         const lane = timeline.querySelector(".cf-lane");
         if (!lane) return null;
         const rect = lane.getBoundingClientRect();
-        const start = core.droppedAxisStart(currentAxis, event.clientX - rect.left, rect.width);
+        const start = core.droppedAxisStart(currentAxis, event.clientX - rect.left, rect.width, payload.dragSnapMinutes ?? 15);
         return start ? { item: pendingDrag, lane, start } : null;
     }
 
@@ -661,10 +795,14 @@
         const text = label(drop ? "dropHelp" : "dropInvalid");
         if (help.textContent !== text) help.textContent = text;
         help.hidden = Boolean(drop);
-        if (!drop) return;
+        if (!drop) {
+            clearDragDates();
+            return;
+        }
+        select(drop.item, false);
+        showDragDates(drop.item, drop.start, drop.lane);
         dropPreview = element("div", "cf-drop-preview");
         dropPreview.style.left = core.axisPosition(currentAxis, core.parseCivil(drop.start)) / currentAxis.duration * 100 + "%";
-        dropPreview.append(element("span", "", displayDate(drop.start)));
         drop.lane.classList.add("cf-drop-target");
         drop.lane.append(dropPreview);
     }
@@ -681,6 +819,8 @@
             return;
         }
         select(drop.item, false);
+        previewPendingDrop(drop);
+        showDragDates(drop.item, drop.start, drop.lane, pendingMove.preview);
         invoke("OperationStartChangeRequested", [drop.item.id, drop.item.version, drop.start]);
     }
 
@@ -693,7 +833,7 @@
         }
         grid.querySelector(".cf-routing-links")?.remove();
         const selected = payload.operations.find(item => item.id === selectedId &&
-            (payload.includeProblemSteps || item.problems.length === 0));
+            matchesView(item));
         scope.hidden = !selected;
         if (!selected) return;
         const links = core.routingLinks(payload.operations, selectedId, payload.documentFocus);
@@ -923,9 +1063,15 @@
             if (Math.abs(delta) > 5) moved = true;
             if (moved) {
                 moveEvent.preventDefault();
+                select(item, false);
                 board.querySelector(".cf-routing-links")?.remove();
+                const next = core.draggedAxisStart(axis, core.parseCivil(item.start), delta, width, payload.dragSnapMinutes ?? 15);
+                showDragDates(item, next, lane, bar);
+                const visualDelta = next
+                    ? (core.axisPosition(axis, core.parseCivil(next)) - core.axisPosition(axis, core.parseCivil(item.start))) / axis.duration * width
+                    : delta;
                 for (const fragment of fragments) {
-                    fragment.style.transform = `translateX(${delta}px)`;
+                    fragment.style.transform = `translateX(${visualDelta}px)`;
                     fragment.classList.add("cf-dragging");
                 }
             }
@@ -939,14 +1085,23 @@
             bar.removeEventListener("lostpointercapture", cancel);
             document.removeEventListener("keydown", keydown);
             if (bar.hasPointerCapture(event.pointerId)) bar.releasePointerCapture(event.pointerId);
-            for (const fragment of fragments) {
-                fragment.style.transform = "";
-                fragment.classList.remove("cf-dragging");
+            let next = "";
+            if (moved && endEvent.type === "pointerup") {
+                next = core.draggedAxisStart(axis, core.parseCivil(item.start), delta, width, payload.dragSnapMinutes ?? 15);
             }
-            renderRoutingLinks();
+            const savingPosition = next && next !== item.start;
+            for (const fragment of fragments) {
+                if (!savingPosition) fragment.style.transform = "";
+                fragment.classList.remove("cf-dragging");
+                fragment.classList.toggle("cf-saving-position", Boolean(savingPosition));
+            }
+            if (savingPosition) pendingMove = { nodes: fragments };
+            else {
+                clearDragDates();
+                renderRoutingLinks();
+            }
             if (moved && endEvent.type === "pointerup") {
                 bar.dataset.suppressClick = "true";
-                const next = core.draggedAxisStart(axis, core.parseCivil(item.start), delta, width);
                 if (!next) {
                     banner.textContent = label(payload.hideNonWorkingDays || payload.hideWeekends ? "hiddenDragRange" : "hourDragRange");
                     banner.classList.remove("cf-error");
@@ -997,6 +1152,24 @@
         const headerMarker = marker.cloneNode(true);
         headerMarker.setAttribute("aria-hidden", "true");
         grid.querySelector(".cf-axis").append(headerMarker);
+    }
+
+    function renderDueDate() {
+        const grid = board?.querySelector(".cf-grid");
+        if (!grid) return;
+        grid.querySelector(".cf-due-overlay")?.remove();
+        const item = activeItem();
+        if (!item || stale) return;
+        const position = core.dueDatePosition(currentAxis, item.due);
+        if (position === null) return;
+        const overlay = element("div", "cf-due-overlay");
+        const marker = element("div", "cf-required-due");
+        marker.style.left = position === 100 ? "calc(100% - 2px)" : position + "%";
+        const caption = `${label("requiredDue")}: ${item.order} - ${item.due} 24:00`;
+        marker.title = caption;
+        marker.append(element("span", "", caption));
+        overlay.append(marker);
+        grid.append(overlay);
     }
 
     function renderBoard() {
@@ -1069,7 +1242,9 @@
                 cell.title = `${text} (${core.formatCivil(period.anchor ?? period.start).slice(0, 10)})`;
                 if (zoom === "hour" && level.unit === "day") {
                     const window = axis.segments.find(segment => segment.start >= period.start && segment.start < period.end);
-                    cell.textContent += ` (${clockTime(window.start)} - ${clockTime(window.end)})`;
+                    const endTime = window.end === period.end && window.end % core.day === 0
+                        ? "24:00" : clockTime(window.end);
+                    cell.textContent += ` (${clockTime(window.start)} - ${endTime})`;
                     cell.title = cell.textContent;
                 }
                 if (level.unit === "hour") cell.title = `${core.formatCivil(period.start)} - ${core.formatCivil(period.end)}`;
@@ -1122,11 +1297,12 @@
                     }, "cf-operation cf-status-" + item.statusId);
                     if (item.positionLocked) bar.prepend(lockIcon());
                     bar.style.left = entry.left + "%";
-                    bar.style.width = `max(12px, ${entry.width}%)`;
+                    bar.style.width = `max(14px, ${entry.width}%)`;
                     bar.style.top = (entry.track * 34 + 4) + "px";
                     bar.dataset.operation = item.id;
                     bar.classList.toggle("cf-no-working-portion", Boolean(entry.noWorkingPortion));
                     bar.classList.toggle("cf-pending", !item.confirmed && !item.finished);
+                    bar.classList.toggle("cf-unapproved", item.approved === false && !item.finished);
                     bar.classList.toggle("cf-late", item.late);
                     bar.classList.toggle("cf-problem", item.problems.length > 0);
                     markSelection(bar, item.id);
@@ -1156,10 +1332,12 @@
         const stackLanes = () => lanes.forEach(({ lane, placed }) => stackLane(lane, placed));
         stackLanes();
         renderCurrentTime();
+        renderDueDate();
         renderRoutingLinks();
         linkObserver = new ResizeObserver(() => {
             stackLanes();
             renderRoutingLinks();
+            renderDueDate();
         });
         linkObserver.observe(grid);
     }
@@ -1168,6 +1346,7 @@
         closeContextMenu(false);
         hideTooltip();
         cancelPendingDrag();
+        if (!pendingMove) clearDragDates();
         if (linkObserver) linkObserver.disconnect();
         if (controller) controller.abort();
         controller = new AbortController();
@@ -1222,10 +1401,15 @@
         lock.classList.add("cf-lock-selected");
         const unlock = mutationButton(label("unlockSelected"), () => requestSelectedLocks(false), false);
         unlock.classList.add("cf-unlock-selected");
+        const documentZoom = mutationButton(label("zoomDocument"), () => {
+            const item = activeItem();
+            invoke("OperationContextRequested", [item?.id || "", item?.version || "", payload.documentFocus ? "unzoom" : "zoom"]);
+        }, false);
+        documentZoom.classList.add("cf-document-zoom");
         const status = element("span", "cf-draft-status");
         status.setAttribute("role", "status");
         status.setAttribute("aria-live", "polite");
-        selection.append(lock, unlock, status);
+        selection.append(lock, unlock, documentZoom, status);
         root.append(selection);
         banner = element("div", "cf-banner");
         banner.setAttribute("role", "alert");
@@ -1244,6 +1428,8 @@
         searchLabel.append(searchInput);
         root.append(banner, searchLabel);
         if (payload.focusNotice) root.append(element("p", "cf-scope cf-document-scope", payload.focusNotice));
+        if (payload.approvalFilter) root.append(element("p", "cf-scope cf-approval-scope",
+            label(payload.approvalFilter === 1 ? "approvedOnlyScope" : "unapprovedOnlyScope")));
         if (!payload.includeProblemSteps) {
             const hidden = payload.operations.filter(item => item.problems.length > 0).length;
             root.append(element("p", "cf-scope cf-problem-scope", label("problemScope").replace("%1", String(hidden))));
@@ -1320,6 +1506,10 @@
                 (item.workMinutes !== undefined && (!Number.isFinite(item.workMinutes) || item.workMinutes < 0)))) {
                 throw new Error("Invalid unscheduled operation details.");
             }
+            if (data.dragSnapMinutes !== undefined &&
+                (!Number.isInteger(data.dragSnapMinutes) || data.dragSnapMinutes < 1 || data.dragSnapMinutes > 1440)) {
+                throw new Error("Invalid drag snap minutes.");
+            }
             if (data.scenario && data.operations.some(item =>
                 typeof item.canReset !== "boolean" || typeof item.canCommit !== "boolean" ||
                 typeof item.draftChanged !== "boolean" || typeof item.positionLocked !== "boolean" ||
@@ -1347,6 +1537,8 @@
                 throw new Error("Missing working calendar windows for Hour view.");
             }
             if (typeof data.includeProblemSteps !== "boolean") throw new Error("Invalid problem-step display setting.");
+            if (data.approvalFilter !== undefined && ![0, 1, 2].includes(data.approvalFilter)) throw new Error("Invalid approval filter.");
+            if (data.approvalFilter && data.operations.some(item => typeof item.approved !== "boolean")) throw new Error("Missing committed approval state.");
             for (const option of ["showSearch", "showDisplayRange", "showStepDetails"]) {
                 if (data[option] !== undefined && typeof data[option] !== "boolean") throw new Error("Invalid optional display setting.");
             }
@@ -1399,8 +1591,10 @@
                 selectedId = stored.selectedId;
                 selectedIds = stored.selectedIds;
             }
-            selectedIds = core.pruneSelection(selectedIds, data.operations);
-            if (selectedId && !data.operations.some(item => item.id === selectedId)) selectedId = "";
+            const approvalVisible = data.operations.filter(item => core.operationVisible(item, "", true, data.approvalFilter ?? 0));
+            selectedIds = core.pruneSelection(selectedIds, approvalVisible);
+            if (selectedId && !approvalVisible.some(item => item.id === selectedId)) selectedId = "";
+            clearPendingMove();
             if (pendingSave) setDraftStatus("saved", "");
             if (data.showSearch !== true) search = "";
             payload = data;

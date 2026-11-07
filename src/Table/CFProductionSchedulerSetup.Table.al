@@ -89,6 +89,18 @@ table 91300 CF_ProductionSchedulerSetup
         {
             Caption = 'Auto Schedule Bypass Capacity';
         }
+        field(29; FirmPlannedOnCommit; Boolean)
+        {
+            Caption = 'Convert Planned to Firm Planned on Commit';
+            InitValue = true;
+        }
+        field(30; DragSnapMinutes; Integer)
+        {
+            Caption = 'Drag Snap Minutes';
+            InitValue = 15;
+            MinValue = 1;
+            MaxValue = 1440;
+        }
     }
     keys
     {
@@ -116,6 +128,8 @@ table 91300 CF_ProductionSchedulerSetup
     begin
         if (MaximumScheduleDays < 1) or (MaximumScheduleDays > 365) then
             Error(HorizonErr);
+        if (DragSnapMinutes < 1) or (DragSnapMinutes > 1440) then
+            Error(DragSnapErr);
     end;
 
     trigger OnInsert()
@@ -133,4 +147,5 @@ table 91300 CF_ProductionSchedulerSetup
     var
         SelectStatusErr: Label 'Select at least one production order status.';
         HorizonErr: Label 'Set Maximum Schedule Days to a value from 1 to 365 in Production Scheduler Setup.';
+        DragSnapErr: Label 'Set Drag Snap Minutes to a value from 1 to 1440 in Production Scheduler Setup.';
 }

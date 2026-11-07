@@ -192,10 +192,10 @@ page 91300 CF_ProductionScheduler
             action(LockSelectedPositions)
             {
                 ApplicationArea = Manufacturing;
-                Caption = 'Lock Selected Positions';
+                Caption = 'Lock Position Selected';
                 Image = Lock;
                 AccessByPermission = tabledata CF_ScheduleDraftOperation = M;
-                ToolTip = 'Fix the selected scheduled operations at their current draft dates. Linked moves and Auto Schedule must respect these reservations.';
+                ToolTip = 'Fix the selected scheduled operations at their current draft dates. Linked moves and Auto Schedule must respect these reservations. This does not commit to Business Central.';
                 trigger OnAction()
                 begin
                     CurrPage.Schedule.LockSelectedOperations(true);
@@ -204,10 +204,10 @@ page 91300 CF_ProductionScheduler
             action(UnlockSelectedPositions)
             {
                 ApplicationArea = Manufacturing;
-                Caption = 'Unlock Selected Positions';
+                Caption = 'Unlock Position Selected';
                 Image = ReleaseDoc;
                 AccessByPermission = tabledata CF_ScheduleDraftOperation = M;
-                ToolTip = 'Allow selected positions to be changed by planning again.';
+                ToolTip = 'Allow selected draft positions to be changed by planning again. This does not commit to Business Central.';
                 trigger OnAction()
                 begin
                     CurrPage.Schedule.LockSelectedOperations(false);
@@ -368,15 +368,59 @@ page 91300 CF_ProductionScheduler
             action(AutoSchedule)
             {
                 ApplicationArea = Manufacturing;
-                Caption = 'Schedule Unscheduled';
+                Caption = 'Run Finite Plan';
                 Image = CalculateCalendar;
                 AccessByPermission = tabledata CF_ScheduleDraftOperation = M;
-                ToolTip = 'Schedule unscheduled routing chains around existing scheduled and locked reservations, using the configured capacity method and due-date priority. BC remains unchanged.';
+                ToolTip = 'Run finite-capacity planning for unscheduled, unlocked operations around existing scheduled and locked reservations. Position locks do not prevent running the plan; locked dates remain unchanged. Requires Finite Capacity with capacity bypass off in Production Scheduler Setup. Uses the configured priority and planning horizon. BC remains unchanged.';
                 trigger OnAction()
                 var
                     TempImported: Record CF_ScheduleDraftOrder temporary;
                 begin
+                    ReloadPlanningSettings();
+                    if (ViewSetup.AutoScheduleMethod <> ViewSetup.AutoScheduleMethod::FiniteCapacity) or
+                       ViewSetup.AutoScheduleBypassCapacity
+                    then
+                        Error(FinitePlanSetupErr);
                     RunAutoSchedule(false, false, TempImported);
+                end;
+            }
+            action(ShowApprovedOnly)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Show Approved Only';
+                Image = Filter;
+                Enabled = ApprovalFilter <> 1;
+                ToolTip = 'Show operations with current committed scheduler approval. Draft approval alone does not count. Capacity, planning and commit scope remain unchanged.';
+                trigger OnAction()
+                begin
+                    ApprovalFilter := 1;
+                    RefreshSchedule();
+                end;
+            }
+            action(ShowUnapprovedOnly)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Show Unapproved Only';
+                Image = Filter;
+                Enabled = ApprovalFilter <> 2;
+                ToolTip = 'Show operations without current committed scheduler approval, including approval invalidated by BC changes. Capacity, planning and commit scope remain unchanged.';
+                trigger OnAction()
+                begin
+                    ApprovalFilter := 2;
+                    RefreshSchedule();
+                end;
+            }
+            action(ShowAllApprovals)
+            {
+                ApplicationArea = Manufacturing;
+                Caption = 'Show All';
+                Image = ClearFilter;
+                Enabled = ApprovalFilter <> 0;
+                ToolTip = 'Remove the approval filter. Other dates, status, resource, search and display filters remain unchanged.';
+                trigger OnAction()
+                begin
+                    ApprovalFilter := 0;
+                    RefreshSchedule();
                 end;
             }
             action(ReplanUnlocked)
@@ -385,7 +429,7 @@ page 91300 CF_ProductionScheduler
                 Caption = 'Replan Unlocked Operations';
                 Image = CalculateCalendar;
                 AccessByPermission = tabledata CF_ScheduleDraftOperation = M;
-                ToolTip = 'Explicitly rebuild unlocked routing chains matching Schedule Options using due-date priority. Locked steps and unrelated orders stay fixed. Review the results, including late finishes.';
+                ToolTip = 'Recalculate unlocked operations, including already-scheduled work, in routing chains matching Schedule Options. Position locks do not prevent replanning; locked dates remain unchanged. If routing dependencies cannot fit around a locked step, that chain fails without moving the lock. Review the results, including late finishes. BC remains unchanged.';
                 trigger OnAction()
                 var
                     TempImported: Record CF_ScheduleDraftOrder temporary;
@@ -460,13 +504,7 @@ page 91300 CF_ProductionScheduler
                     ToolTip = 'Restore dates, filters, scale, search and expanded resources from before Zoom to Document.';
                     trigger OnAction()
                     begin
-                        if not HasPreviousView then
-                            exit;
-                        RestoreView(TempPreviousView);
-                        HasPreviousView := false;
-                        HasDateUndo := false;
-                        ViewChange := 'restore';
-                        RefreshSchedule();
+                        UnzoomDocument();
                     end;
                 }
                 action(ChangePreset)
@@ -652,6 +690,9 @@ page 91300 CF_ProductionScheduler
                 actionref(ShowAllDaysPromoted; ShowAllDays) { }
                 actionref(HideUnscheduledPromoted; HideUnscheduled) { }
                 actionref(ShowUnscheduledPromoted; ShowUnscheduled) { }
+                actionref(ShowApprovedOnlyPromoted; ShowApprovedOnly) { }
+                actionref(ShowUnapprovedOnlyPromoted; ShowUnapprovedOnly) { }
+                actionref(ShowAllApprovalsPromoted; ShowAllApprovals) { }
                 actionref(AutoSchedulePromoted; AutoSchedule) { }
                 actionref(ReplanUnlockedPromoted; ReplanUnlocked) { }
                 actionref(RefreshPromoted; Refresh) { }
@@ -729,6 +770,7 @@ page 91300 CF_ProductionScheduler
     begin
         NonWorkingDaysHidden := false;
         UnscheduledHidden := false;
+        ApprovalFilter := 0;
         IncludeProblemSteps := true;
         ViewSetup.LoadDefaults();
         ViewSetup.ValidateHorizon();
@@ -768,6 +810,7 @@ page 91300 CF_ProductionScheduler
         Payload.Add('hideWeekends', WeekendsHidden);
         Payload.Add('hideUnscheduled', UnscheduledHidden);
         Payload.Add('includeProblemSteps', IncludeProblemSteps);
+        Payload.Add('approvalFilter', ApprovalFilter);
         Payload.Add('showSearch', ShowSearch);
         Payload.Add('showDisplayRange', ShowDisplayRange);
         Payload.Add('showStepDetails', ShowStepDetails);
@@ -917,6 +960,7 @@ page 91300 CF_ProductionScheduler
         NonWorkingDaysHidden := false;
         WeekendsHidden := false;
         IncludeProblemSteps := true;
+        ApprovalFilter := 0;
         ClearPresetFormulas();
         FocusNotice := StrSubstNo(DocumentFocusLbl, Status, OrderNo);
         if NoDates then
@@ -928,6 +972,17 @@ page 91300 CF_ProductionScheduler
     begin
         CaptureView(TempDateUndo);
         HasDateUndo := true;
+    end;
+
+    local procedure UnzoomDocument()
+    begin
+        if not HasPreviousView then
+            exit;
+        RestoreView(TempPreviousView);
+        HasPreviousView := false;
+        HasDateUndo := false;
+        ViewChange := 'restore';
+        RefreshSchedule();
     end;
 
     local procedure ClearPresetFormulas()
@@ -956,6 +1011,7 @@ page 91300 CF_ProductionScheduler
         State.HideNonWorkingDays := NonWorkingDaysHidden;
         State.HideWeekends := WeekendsHidden;
         State.HideUnscheduled := UnscheduledHidden;
+        State.ApprovalFilter := ApprovalFilter;
         State.IncludeProblemSteps := IncludeProblemSteps;
         State.DocumentFocused := DocumentFocused;
         State.SelectedOperationId := CopyStr(SelectedOperationId, 1, MaxStrLen(State.SelectedOperationId));
@@ -990,6 +1046,7 @@ page 91300 CF_ProductionScheduler
         NonWorkingDaysHidden := State.HideNonWorkingDays;
         WeekendsHidden := State.HideWeekends;
         UnscheduledHidden := State.HideUnscheduled;
+        ApprovalFilter := State.ApprovalFilter;
         IncludeProblemSteps := State.IncludeProblemSteps;
         DocumentFocused := State.DocumentFocused;
         SelectedOperationId := State.SelectedOperationId;
@@ -1233,6 +1290,10 @@ page 91300 CF_ProductionScheduler
         Draft: Record CF_ScheduleDraftOperation;
         Editor: Page CF_EditDraftStart;
     begin
+        if Command = 'unzoom' then begin
+            UnzoomDocument();
+            exit;
+        end;
         Drafts.GetOperation(ActiveScenarioCode, OperationId, Draft);
         SelectedOperationId := OperationId;
         case Command of
@@ -1271,6 +1332,7 @@ page 91300 CF_ProductionScheduler
         DraftOrder: Record CF_ScheduleDraftOrder;
         TempOrders: Record CF_ScheduleDraftOrder temporary;
         TempResults: Record CF_AutoScheduleBuffer temporary;
+        CommittedOrder: Record "Production Order";
         Worker: Codeunit CF_ProductionScheduleChange;
         Results: Page CF_ScheduleCommitResults;
         Failure: Text;
@@ -1327,8 +1389,20 @@ page 91300 CF_ProductionScheduler
                             Failure := CancelledLbl;
                     end;
                 end;
-                if TempResults.Scheduled then
-                    TempResults.Result := CommittedLbl
+                if TempResults.Scheduled then begin
+                    Worker.GetCommittedOrder(CommittedOrder);
+                    TempResults.Status := CommittedOrder.Status;
+                    TempResults.OrderNo := CommittedOrder."No.";
+                    if (TempOrders.Status = TempOrders.Status::Planned) and
+                       (CommittedOrder.Status = CommittedOrder.Status::"Firm Planned")
+                    then begin
+                        TempResults.Result := CopyStr(StrSubstNo(PromotedCommitLbl, TempOrders.OrderNo, CommittedOrder."No."), 1, MaxStrLen(TempResults.Result));
+                        if ProductionOrderNo = TempOrders.OrderNo then
+                            ProductionOrderNo := CommittedOrder."No.";
+                        Clear(SelectedOperationId);
+                    end else
+                        TempResults.Result := CommittedLbl;
+                end
                 else begin
                     if StrLen(Failure) > MaxStrLen(TempResults.Result) then
                         Failure := CopyStr(Failure, 1, MaxStrLen(TempResults.Result) - StrLen(TruncatedLbl)) + TruncatedLbl;
@@ -1360,6 +1434,7 @@ page 91300 CF_ProductionScheduler
         DocumentFocused: Boolean;
         FitToWindow: Boolean;
         HasPreviousView: Boolean;
+        ApprovalFilter: Integer;
         HasDateUndo: Boolean;
         ViewChange: Text;
         FocusNotice: Text;
@@ -1379,7 +1454,9 @@ page 91300 CF_ProductionScheduler
         DocumentFocusLbl: Label 'Document view: %1 %2. All routing resources are included; capacity still includes competing orders.', Comment = '%1 = status, %2 = order number';
         NoDocumentDatesLbl: Label 'No valid routing dates were found; the previous period is retained. Undated steps remain in the unplanned list.';
         NoCandidatesLbl: Label 'No eligible unlocked routing chains match this action and the Schedule Options filters.';
-        AutoScheduleQst: Label 'Schedule %1 routing chains?\Method: %2\Priority: %3\Range: %4 to %5\Mode: %6\Bypass occupied capacity and daily overload checks: %7\When bypass is enabled, operations may overlap and overload resources without per-chain capacity warnings. Working calendars, routing restrictions, locks and the horizon still apply. Manual moves and Commit to BC retain normal checks.\The work-centre and order filters select complete routing chains. Text search and problem visibility are display-only.\\Locked steps stay fixed. Schedule Unscheduled also keeps existing scheduled steps fixed. Replan recalculates unlocked work. Each chain is atomic; failures do not undo earlier successful chains. Review every result, including late finishes. BC is not changed. Continue?', Comment = '%1 = count, %2 = method, %3 = priority, %4 = first date, %5 = last date, %6 = scheduling mode, %7 = bypass capacity enabled';
+        FinitePlanSetupErr: Label 'Run Finite Plan requires Auto Schedule Method = Draft Finite Capacity (Serial) and Auto Schedule Bypass Capacity = No in Production Scheduler Setup. No planning changes were made.';
+        PromotedCommitLbl: Label 'Committed to BC. Planned order %1 converted to Firm Planned order %2; all unfinished operations approved. Active scenario updated to the resulting BC order.', Comment = '%1 = original order number, %2 = converted order number';
+        AutoScheduleQst: Label 'Schedule %1 routing chains?\Method: %2\Priority: %3\Range: %4 to %5\Mode: %6\Bypass occupied capacity and daily overload checks: %7\When bypass is enabled, operations may overlap and overload resources without per-chain capacity warnings. Working calendars, routing restrictions, locks and the horizon still apply. Manual moves and Commit to BC retain normal checks.\The work-centre and order filters select complete routing chains. Text search and problem visibility are display-only.\\Locked steps stay fixed. Run Finite Plan also keeps existing scheduled steps fixed. Replan recalculates unlocked work. Each chain is atomic; failures do not undo earlier successful chains. Review every result, including late finishes. BC is not changed. Continue?', Comment = '%1 = count, %2 = method, %3 = priority, %4 = first date, %5 = last date, %6 = scheduling mode, %7 = bypass capacity enabled';
         OverloadQst: Label 'This schedule has daily overload:\%1\Save despite this overload? Related operations may also move.', Comment = '%1 = overload report';
         CapacityChangedLbl: Label 'Capacity changed while you were confirming. No changes were saved. Review the refreshed schedule and retry.';
         CancelledLbl: Label 'Scheduling cancelled. No changes were saved.';
@@ -1387,7 +1464,7 @@ page 91300 CF_ProductionScheduler
         ImportQst: Label 'Import new orders matching Schedule Options into scenario %1? All routing steps for each matching order are copied. Existing drafts are preserved. BC will not change.', Comment = '%1 = scenario';
         ImportedLbl: Label '%1 new orders imported. Existing drafts were not overwritten.', Comment = '%1 = count';
         ResetQst: Label 'Discard all draft changes for order %1 in scenario %2 and copy its current BC routing? Other scenarios and BC will not change.', Comment = '%1 = order, %2 = scenario';
-        CommitQst: Label 'Commit %1 changed orders from scenario %2 to BC? Each order is committed atomically. Conflicts or date/capacity differences roll back that order; other orders continue. Display filters do not limit this commit.', Comment = '%1 = count, %2 = scenario';
+        CommitQst: Label 'Commit %1 changed orders from scenario %2 to BC? Each order is committed atomically. If Convert Planned to Firm Planned on Commit is enabled in Production Scheduler Setup, Planned orders with every unfinished operation approved will become Firm Planned, even if dates are unchanged. BC number series may assign a new order number. Converted orders may be outside your current status filter; other scenarios retain their drafts and require reconciliation. Conflicts, date/capacity differences or conversion failures roll back that order; other orders continue. Display filters do not limit this commit.', Comment = '%1 = count, %2 = scenario';
         CommitOverloadQst: Label 'Committing order %1 causes daily overload:\%2\Commit this order despite the overload?', Comment = '%1 = order, %2 = overload';
         CommittedLbl: Label 'Committed to BC. Draft dates and daily capacity allocations verified; the baseline was refreshed.';
         TruncatedLbl: Label ' [message truncated]';

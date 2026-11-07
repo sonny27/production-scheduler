@@ -93,6 +93,8 @@ codeunit 91302 CF_ProductionScheduleChange
             if Warning <> AcceptedWarning then
                 Error('%1%2', ConfirmationPrefix(), Warning);
         end;
+        if Setup.FirmPlannedOnCommit and (Status = Status::Planned) and AllUnfinishedApproved(Draft) then
+            PromoteAndRemap(Order, DraftOrder, Draft);
         if Draft.FindSet() then
             repeat
                 if Draft.Confirmed and not Draft.Finished then begin
@@ -110,7 +112,78 @@ codeunit 91302 CF_ProductionScheduleChange
                     State.Modify();
                 end;
             until Draft.Next() = 0;
-        Drafts.ImportOrder(ScenarioCode, Status, OrderNo, true);
+        Drafts.ImportOrder(ScenarioCode, Order.Status, Order."No.", true);
+        CommittedOrder := Order;
+    end;
+
+    local procedure AllUnfinishedApproved(Draft: Record CF_ScheduleDraftOperation): Boolean
+    begin
+        Draft.SetRange(Finished, false);
+        if Draft.IsEmpty() then
+            exit(false);
+        Draft.SetRange(Confirmed, false);
+        exit(Draft.IsEmpty());
+    end;
+
+    local procedure PromoteAndRemap(var Order: Record "Production Order"; var DraftOrder: Record CF_ScheduleDraftOrder; var Draft: Record CF_ScheduleDraftOperation)
+    var
+        TempOperations: Record CF_ScheduleDraftOperation temporary;
+        ExistingOrder: Record CF_ScheduleDraftOrder;
+        Allocation: Record CF_ScheduleDraftAllocation;
+        Routing: Record "Prod. Order Routing Line";
+        State: Record CF_ProductionScheduleState;
+        Promotion: Codeunit CF_SchedulerOrderPromotion;
+    begin
+        if not Order.WritePermission() then
+            Error(PermissionErr);
+        Promotion.Promote(Order, Order);
+        if ExistingOrder.Get(ScenarioCode, Order.Status, Order."No.") then
+            Error(TargetDraftErr, Order."No.");
+        Routing.SetRange(Status, Order.Status);
+        Routing.SetRange("Prod. Order No.", Order."No.");
+        if Routing.Count() <> Draft.Count() then
+            Error(PromotionRoutingErr, '');
+        Routing.Reset();
+        if Draft.FindSet() then
+            repeat
+                if not Routing.Get(Order.Status, Order."No.", Draft.RoutingReferenceNo, Draft.RoutingNo, Draft.OperationNo) then
+                    Error(PromotionRoutingErr, Draft.OperationNo);
+                if (Routing.Type <> Draft.ResourceType) or (Routing."No." <> Draft.ResourceNo) or
+                   (Routing."Work Center No." <> Draft.WorkCenterNo) or
+                   ((Routing."Routing Status" = Routing."Routing Status"::Finished) <> Draft.Finished)
+                then
+                    Error(PromotionRoutingErr, Draft.OperationNo);
+                if (Routing."Starting Date-Time" <> Draft.StartDateTime) or
+                   (Routing."Ending Date-Time" <> Draft.EndDateTime)
+                then
+                    Error(DifferenceErr, Draft.OperationNo, Draft.StartDateTime, Draft.EndDateTime,
+                        Routing."Starting Date-Time", Routing."Ending Date-Time");
+                VerifyAllocations(Draft, Routing);
+                TempOperations := Draft;
+                TempOperations.Status := Order.Status;
+                TempOperations.OrderNo := Order."No.";
+                TempOperations.OperationId := Routing.SystemId;
+                TempOperations.Insert();
+                if Draft.OperationId <> Routing.SystemId then
+                    if State.Get(Draft.OperationId) then
+                        State.Delete();
+            until Draft.Next() = 0;
+        Allocation.SetRange(ScenarioCode, ScenarioCode);
+        Allocation.SetRange(Status, Status);
+        Allocation.SetRange(OrderNo, OrderNo);
+        Allocation.DeleteAll();
+        Draft.DeleteAll();
+        DraftOrder.Delete();
+        DraftOrder.Status := Order.Status;
+        DraftOrder.OrderNo := Order."No.";
+        DraftOrder.Insert();
+        if TempOperations.FindSet() then
+            repeat
+                Draft := TempOperations;
+                Draft.Insert();
+            until TempOperations.Next() = 0;
+        Draft.SetRange(Status, Order.Status);
+        Draft.SetRange(OrderNo, Order."No.");
     end;
 
     local procedure VerifyAllocations(Draft: Record CF_ScheduleDraftOperation; Routing: Record "Prod. Order Routing Line")
@@ -165,6 +238,13 @@ codeunit 91302 CF_ProductionScheduleChange
         OrderNo := NewOrderNo;
         ExpectedRevision := Revision;
         AcceptedWarning := Warning;
+        Clear(CommittedOrder);
+    end;
+
+    procedure GetCommittedOrder(var Order: Record "Production Order")
+    begin
+        CommittedOrder.TestField("No.");
+        Order := CommittedOrder;
     end;
 
     procedure ConfirmationPrefix(): Text
@@ -178,10 +258,13 @@ codeunit 91302 CF_ProductionScheduleChange
         OrderNo: Code[20];
         ExpectedRevision: Integer;
         AcceptedWarning: Text;
+        CommittedOrder: Record "Production Order";
         PermissionErr: Label 'Commit requires scheduler commit permissions and standard manufacturing write permissions.';
         StaleErr: Label 'The draft order changed after confirmation. Refresh and retry Commit to BC.';
         DatesErr: Label 'The draft contains invalid dates. The whole order was rolled back.';
         DifferenceErr: Label 'Operation %1 differs after BC recalculation. Draft: %2 to %3. BC: %4 to %5. The whole order was rolled back; review the routing and replan.', Comment = '%1 = operation, %2 = draft start, %3 = draft end, %4 = BC start, %5 = BC end';
         AllocationErr: Label 'BC capacity allocation differs from draft operation %1. The whole order was rolled back; review calendars and replan.', Comment = '%1 = operation';
         OverloadErr: Label 'Commit would increase daily overload. The whole order was rolled back.\%1', Comment = '%1 = overload report';
+        TargetDraftErr: Label 'Scenario already contains Firm Planned order %1. Conversion would overwrite its draft. The whole order was rolled back.', Comment = '%1 = target order number';
+        PromotionRoutingErr: Label 'BC conversion did not retain routing operation %1. The whole order was rolled back.', Comment = '%1 = operation number';
 }

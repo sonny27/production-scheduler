@@ -6,6 +6,154 @@ const fs = require("node:fs");
 const path = require("node:path");
 const source = (folder, file) => fs.readFileSync(path.join(__dirname, "..", "src", folder, file), "utf8");
 
+test("approval filtering is display-only, uses live BC state and restores with the view", () => {
+    const page = source("Page", "CFProductionScheduler.Page.al");
+    for (const action of ["ShowApprovedOnly", "ShowUnapprovedOnly", "ShowAllApprovals"])
+        assert.match(page, new RegExp(`actionref\\(${action}Promoted; ${action}\\)`));
+    assert.match(page, /Payload\.Add\('approvalFilter', ApprovalFilter\)/);
+    assert.match(page, /State\.ApprovalFilter := ApprovalFilter/);
+    assert.match(page, /ApprovalFilter := State\.ApprovalFilter/);
+    const draft = source("Codeunit", "CFScheduleDraftMgt.Codeunit.al");
+    assert.match(draft, /if Routing\.GetBySystemId\(Draft\.OperationId\) then\s+Approved := Mgt\.IsConfirmed\(Routing\)/);
+    assert.match(draft, /Item\.Add\('approved', Approved\)/);
+    const planning = page.slice(page.indexOf("local procedure RunAutoSchedule("), page.indexOf("local procedure ResetScenario("));
+    assert.doesNotMatch(planning, /ApprovalFilter/);
+});
+
+test("planning accepts chains with locks but moves only eligible unlocked operations", () => {
+    const auto = source("Codeunit", "CFAutoSchedule.Codeunit.al");
+    assert.match(auto, /exit\(not Draft\.Finished and not Draft\.PositionLocked and \(Replan or not Draft\.Confirmed\)\)/);
+    const change = source("Codeunit", "CFDraftScheduleChange.Codeunit.al");
+    assert.match(change, /exit\(not Draft\.PositionLocked and not Draft\.Finished and\s+\(not Automatic or Replan or not Draft\.Confirmed\)\)/);
+    assert.match(change, /if Automatic and CanMove\(Following\) then\s+ExcludedOperations\.Add\(Following\.OperationId\)/);
+    assert.match(change, /if not CanMove\(Following\) then\s+Error\(LockedErr, Following\.OperationNo\)/);
+    assert.match(source("Codeunit", "CFDraftFiniteSlots.Codeunit.al"), /if not Excluded\.Contains\(Allocation\.OperationId\) then begin/);
+    const page = source("Page", "CFProductionScheduler.Page.al");
+    assert.match(page.slice(page.indexOf("action(AutoSchedule)"), page.indexOf("action(ReplanUnlocked)")),
+        /RunAutoSchedule\(false, false, TempImported\)/);
+    assert.match(page.slice(page.indexOf("action(ReplanUnlocked)"), page.indexOf("action(Refresh)")),
+        /RunAutoSchedule\(true, false, TempImported\)/);
+});
+
+test("selection toolbar hides position actions that have no applicable state changes", () => {
+    const ui = source("ControlAddIn", "scheduler.js");
+    assert.match(ui, /const changes = lockChanges\(items, locked\);[\s\S]*?control\.hidden = changes\.length === 0;/);
+    assert.match(ui, /control\.dataset\.allowed = String\(changes\.length > 0 && changes\.every\(item => canLock\(item, locked\)\)\)/);
+});
+
+test("document zoom toolbar and context menu share the existing reversible view flow", () => {
+    const ui = source("ControlAddIn", "scheduler.js");
+    assert.match(ui, /documentZoom\.textContent = label\(payload\.documentFocus \? "unzoomDocument" : "zoomDocument"\)/);
+    assert.match(ui, /selection\.append\(lock, unlock, documentZoom, status\)/);
+    const page = source("Page", "CFProductionScheduler.Page.al");
+    const context = page.slice(page.indexOf("local procedure HandleContext("));
+    assert.ok(context.indexOf("if Command = 'unzoom'") < context.indexOf("Drafts.GetOperation("));
+    assert.match(context, /'zoom': FocusDocument\(\)/);
+    assert.match(page, /local procedure UnzoomDocument\(\)[\s\S]*?RestoreView\(TempPreviousView\);[\s\S]*?ViewChange := 'restore';/);
+});
+
+test("drag saves retain pending visuals without mutating the authoritative operation dates", () => {
+    const ui = source("ControlAddIn", "scheduler.js");
+    const drag = ui.slice(ui.indexOf("function dragBar("), ui.indexOf("function requestCurrentTime("));
+    assert.match(drag, /if \(!savingPosition\) fragment\.style\.transform = ""/);
+    assert.match(drag, /if \(savingPosition\) pendingMove = \{ nodes: fragments \}/);
+    assert.doesNotMatch(drag, /item\.(?:start|end|version|confirmed)\s*=/);
+    const drop = ui.slice(ui.indexOf("function dropPending("), ui.indexOf("function renderRoutingLinks("));
+    assert.match(drop, /previewPendingDrop\(drop\);\s+showDragDates\(drop\.item, drop\.start, drop\.lane, pendingMove\.preview\);\s+invoke\("OperationStartChangeRequested"/);
+    assert.match(ui, /if \(currentGeneration === generation && !pendingMove\) setBusy\(false\)/);
+    assert.match(ui, /clearPendingMove\(\);\s+if \(pendingSave\) setDraftStatus\("saved"/);
+    assert.match(ui, /if \(state === "failed"\) clearPendingMove\(\)/);
+    assert.match(ui, /if \(pendingMove\) error\(label\("failed"\)\)/);
+});
+
+test("drag snapping setup is validated and passed to both drag paths", () => {
+    const setup = source("Table", "CFProductionSchedulerSetup.Table.al");
+    assert.match(setup, /field\(30; DragSnapMinutes; Integer\)[\s\S]*?InitValue = 15/);
+    assert.match(setup, /DragSnapMinutes < 1.*DragSnapMinutes > 1440/);
+    assert.match(source("Codeunit", "CFSchedulerUpgrade.Codeunit.al"), /if Setup\.DragSnapMinutes = 0 then\s+Setup\.DragSnapMinutes := 15/);
+    assert.match(source("Page", "CFProductionSchedulerSetup.Page.al"), /field\(DragSnapMinutes; Rec\.DragSnapMinutes\)/);
+    assert.match(source("Codeunit", "CFProductionSchedulerMgt.Codeunit.al"), /Payload\.Add\('dragSnapMinutes', Setup\.DragSnapMinutes\)/);
+    const ui = source("ControlAddIn", "scheduler.js");
+    assert.match(ui, /core\.droppedAxisStart\(currentAxis, event\.clientX - rect\.left, rect\.width, payload\.dragSnapMinutes \?\? 15\)/);
+    assert.equal((ui.match(/core\.draggedAxisStart\(axis, core\.parseCivil\(item\.start\), delta, width, payload\.dragSnapMinutes \?\? 15\)/g) || []).length, 2);
+});
+
+test("Planned to Firm Planned promotion defaults on and preserves later setup opt-outs", () => {
+    const setup = source("Table", "CFProductionSchedulerSetup.Table.al");
+    assert.match(setup, /field\(29; FirmPlannedOnCommit; Boolean\)[\s\S]*?InitValue = true/);
+    assert.match(source("Page", "CFProductionSchedulerSetup.Page.al"), /field\(FirmPlannedOnCommit; Rec\.FirmPlannedOnCommit\)/);
+    const upgrade = source("Codeunit", "CFSchedulerUpgrade.Codeunit.al");
+    assert.match(upgrade, /if not UpgradeTag\.HasUpgradeTag\(FirmPlannedTag\(\)\) then\s+Setup\.FirmPlannedOnCommit := true/);
+    assert.match(upgrade, /UpgradeTag\.SetUpgradeTag\(FirmPlannedTag\(\)\)/);
+    assert.match(upgrade, /OnGetPerCompanyUpgradeTags/);
+    assert.match(upgrade, /PerCompanyUpgradeTags\.Add\(FirmPlannedTag\(\)\)/);
+});
+
+test("only successful fully-approved Planned order commits promote, including unchanged dates", () => {
+    const worker = source("Codeunit", "CFProductionScheduleChange.Codeunit.al");
+    assert.match(worker, /Setup\.FirmPlannedOnCommit and \(Status = Status::Planned\) and AllUnfinishedApproved\(Draft\)/);
+    const approval = worker.slice(worker.indexOf("local procedure AllUnfinishedApproved"), worker.indexOf("local procedure PromoteAndRemap"));
+    assert.match(approval, /Draft\.SetRange\(Finished, false\);\s+if Draft\.IsEmpty\(\) then\s+exit\(false\)/);
+    assert.match(approval, /Draft\.SetRange\(Confirmed, false\);\s+exit\(Draft\.IsEmpty\(\)\)/);
+    assert.doesNotMatch(approval, /Changed|StartDateTime|EndDateTime/);
+    const commit = worker.slice(worker.indexOf("local procedure CommitOrder()"), worker.indexOf("local procedure AllUnfinishedApproved"));
+    assert.ok(commit.indexOf("PromoteAndRemap(Order") > commit.indexOf("Error('%1%2', ConfirmationPrefix(), Warning)"));
+    assert.ok(commit.indexOf("PromoteAndRemap(Order") > commit.indexOf("VerifyAllocations(Draft, Routing)"));
+    assert.match(commit, /Drafts\.CheckBaseline\(DraftOrder\)/);
+    assert.match(commit, /State\.RoutingVersion := Routing\.SystemRowVersion/);
+    assert.match(commit, /Drafts\.ImportOrder\(ScenarioCode, Order\.Status, Order\."No\.", true\)/);
+    assert.doesNotMatch(commit, /Commit\(\)/);
+});
+
+test("promotion uses BC status management with narrowly bound commit suppression", () => {
+    const promotion = source("Codeunit", "CFSchedulerOrderPromotion.Codeunit.al");
+    assert.match(promotion, /EventSubscriberInstance = Manual/);
+    assert.match(promotion, /CommitBehavior\(CommitBehavior::Error\)/);
+    assert.match(promotion, /Order\.TestField\(Status, Order\.Status::Planned\)/);
+    assert.match(promotion, /BindSubscription\(Subscriber\);\s+StatusMgt\.ChangeProdOrderStatus\(Order, Order\.Status::"Firm Planned", WorkDate\(\), false\);\s+UnbindSubscription\(Subscriber\)/);
+    assert.match(promotion, /xProductionOrder\.Status <> xProductionOrder\.Status::Planned/);
+    assert.match(promotion, /xProductionOrder\."No\." <> RequestedOrderNo/);
+    assert.match(promotion, /NewStatus <> NewStatus::"Firm Planned"/);
+    assert.match(promotion, /SuppressCommit := true/);
+    assert.match(promotion, /Result := ToProdOrder/);
+    assert.doesNotMatch(promotion, /Order\.Validate\(Status|Order\.Rename|Commit\(\)/);
+    assert.match(source("PermissionSet", "CFSchedulerCommit.PermissionSet.al"), /codeunit CF_SchedulerOrderPromotion = X/);
+    assert.doesNotMatch(source("PermissionSet", "CFSchedulerPlanner.PermissionSet.al"), /CF_SchedulerOrderPromotion/);
+});
+
+test("promotion verifies remapped routing and allocations before replacing the active scenario", () => {
+    const worker = source("Codeunit", "CFProductionScheduleChange.Codeunit.al");
+    const remap = worker.slice(worker.indexOf("local procedure PromoteAndRemap"), worker.indexOf("local procedure VerifyAllocations"));
+    assert.match(remap, /ExistingOrder\.Get\(ScenarioCode, Order\.Status, Order\."No\."\)/);
+    assert.match(remap, /Routing\.Count\(\) <> Draft\.Count\(\)/);
+    assert.match(remap, /Routing\.Get\(Order\.Status, Order\."No\.", Draft\.RoutingReferenceNo, Draft\.RoutingNo, Draft\.OperationNo\)/);
+    assert.match(remap, /Routing\."Starting Date-Time" <> Draft\.StartDateTime/);
+    assert.match(remap, /Routing\."Ending Date-Time" <> Draft\.EndDateTime/);
+    assert.match(remap, /VerifyAllocations\(Draft, Routing\)/);
+    assert.match(remap, /TempOperations := Draft/); // Includes confirmations and position locks.
+    assert.match(remap, /TempOperations\.OperationId := Routing\.SystemId/);
+    assert.match(remap, /if Draft\.OperationId <> Routing\.SystemId then\s+if State\.Get\(Draft\.OperationId\) then\s+State\.Delete\(\)/);
+    assert.ok(remap.indexOf("VerifyAllocations") < remap.indexOf("Allocation.DeleteAll()"));
+    assert.match(remap, /Allocation\.SetRange\(ScenarioCode, ScenarioCode\)/);
+    assert.match(remap, /DraftOrder\.Delete\(\);\s+DraftOrder\.Status := Order\.Status;\s+DraftOrder\.OrderNo := Order\."No\.";\s+DraftOrder\.Insert\(\)/);
+    assert.match(remap, /Draft\.SetRange\(Status, Order\.Status\);\s+Draft\.SetRange\(OrderNo, Order\."No\."\)/);
+    const page = source("Page", "CFProductionScheduler.Page.al");
+    assert.match(page, /Worker\.GetCommittedOrder\(CommittedOrder\);\s+TempResults\.Status := CommittedOrder\.Status;\s+TempResults\.OrderNo := CommittedOrder\."No\."/);
+    assert.match(page, /StrSubstNo\(PromotedCommitLbl, TempOrders\.OrderNo, CommittedOrder\."No\."\)/);
+    assert.match(page, /if ProductionOrderNo = TempOrders\.OrderNo then\s+ProductionOrderNo := CommittedOrder\."No\.";\s+Clear\(SelectedOperationId\)/);
+});
+
+test("Run Finite Plan is promoted and rejects non-finite or bypass configuration before planning", () => {
+    const page = source("Page", "CFProductionScheduler.Page.al");
+    const action = page.slice(page.indexOf("action(AutoSchedule)"), page.indexOf("action(ReplanUnlocked)"));
+    assert.match(action, /Caption = 'Run Finite Plan'/);
+    assert.match(page, /actionref\(AutoSchedulePromoted; AutoSchedule\)/);
+    assert.match(action, /ReloadPlanningSettings\(\)/);
+    assert.match(action, /AutoScheduleMethod <> ViewSetup\.AutoScheduleMethod::FiniteCapacity/);
+    assert.match(action, /ViewSetup\.AutoScheduleBypassCapacity\s+then\s+Error\(FinitePlanSetupErr\)/);
+    assert.ok(action.indexOf("Error(FinitePlanSetupErr)") < action.indexOf("RunAutoSchedule(false, false, TempImported)"));
+});
+
 test("imported-order override preserves dates, allocations and routing restrictions", () => {
     const draft = source("Codeunit", "CFScheduleDraftMgt.Codeunit.al");
     const override = draft.slice(draft.indexOf("procedure OverrideImportedOrder("), draft.indexOf("procedure LiveVersion("));
@@ -152,7 +300,7 @@ test("undo rejects intervening scenario, BC reservation and calendar changes", (
 
 test("capacity bypass is an opt-in automatic scheduling setting with explicit confirmation and results", () => {
     const setup = source("Table", "CFProductionSchedulerSetup.Table.al");
-    const flag = setup.slice(setup.indexOf("field(28; AutoScheduleBypassCapacity"), setup.indexOf("    keys"));
+    const flag = setup.match(/field\(28; AutoScheduleBypassCapacity; Boolean\)\s*\{[^}]*\}/)[0];
     assert.match(flag, /Boolean/);
     assert.doesNotMatch(flag, /InitValue\s*=\s*true/);
     assert.match(source("Page", "CFProductionSchedulerSetup.Page.al"), /field\(AutoScheduleBypassCapacity; Rec\.AutoScheduleBypassCapacity\)/);

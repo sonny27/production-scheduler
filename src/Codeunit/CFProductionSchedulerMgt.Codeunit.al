@@ -111,6 +111,7 @@ codeunit 91300 CF_ProductionSchedulerMgt
         Payload.Add('timeZone', TimeZoneLbl);
         Payload.Add('viewMode', ViewModeKey(Setup.DefaultViewMode));
         Payload.Add('excludeNonWorkingHours', Setup.ExcludeNonWorkingHours);
+        Payload.Add('dragSnapMinutes', Setup.DragSnapMinutes);
         exit(Payload);
     end;
 
@@ -384,6 +385,7 @@ codeunit 91300 CF_ProductionSchedulerMgt
         Item.Add('end', CivilDateTime(Routing."Ending Date", Routing."Ending Time"));
         Item.Add('due', Format(Order."Due Date", 0, 9));
         Item.Add('confirmed', IsConfirmed(Routing));
+        Item.Add('approved', IsConfirmed(Routing));
         Item.Add('issue', Issue);
         Item.Add('problems', ProblemTexts);
         Item.Add('editable', (EditingIssue = '') and Routing.WritePermission() and State.WritePermission());
@@ -550,7 +552,7 @@ codeunit 91300 CF_ProductionSchedulerMgt
 
     procedure ShowHelp()
     begin
-        Message(HelpLbl + '\\' + WorkingDisplayHelpLbl + '\\' + SelectionHelpLbl, ScopeLbl, TimeZoneLbl, LegendLbl, DropHelpLbl);
+        Message(HelpLbl + '\\' + WorkingDisplayHelpLbl + '\\' + SelectionHelpLbl, ScopeLbl, TimeZoneLbl, LegendLbl + ' ' + ApprovalStyleLbl, DropHelpLbl);
     end;
 
     procedure CivilDateTime(ValueDate: Date; ValueTime: Time): Text
@@ -663,6 +665,9 @@ codeunit 91300 CF_ProductionSchedulerMgt
         Result.Add('routingUnscheduled', RoutingUnscheduledLbl);
         Result.Add('unscheduled', UnscheduledLbl);
         Result.Add('dropHelp', DropHelpLbl);
+        Result.Add('requestedStart', RequestedStartLbl);
+        Result.Add('estimatedFinish', EstimatedFinishLbl);
+        Result.Add('requiredDue', RequiredDueLbl);
         Result.Add('dropInvalid', DropInvalidLbl);
         Result.Add('nonWorkingScope', NonWorkingScopeLbl);
         Result.Add('noWorkingDays', NoWorkingDaysLbl);
@@ -680,6 +685,13 @@ codeunit 91300 CF_ProductionSchedulerMgt
         Result.Add('draftDetails', RoutingLbl);
         Result.Add('editDraft', EditDraftLbl);
         Result.Add('zoomDocument', ZoomDocumentLbl);
+        Result.Add('unzoomDocument', UnzoomDocumentLbl);
+        Result.Add('approvedOnlyScope', ApprovedOnlyScopeLbl);
+        Result.Add('approvedStatus', ApprovedStatusLbl);
+        Result.Add('problemDetails', ProblemDetailsLbl);
+        Result.Add('close', CloseLbl);
+        Result.Add('unapprovedStatus', UnapprovedStatusLbl);
+        Result.Add('unapprovedOnlyScope', UnapprovedOnlyScopeLbl);
         Result.Add('resetDraft', ResetDraftLbl);
         Result.Add('commitOrder', CommitOrderLbl);
         Result.Add('draftScenario', DraftScenarioLbl);
@@ -700,7 +712,7 @@ codeunit 91300 CF_ProductionSchedulerMgt
         Result.Add('missingCalendar', MissingCalendarLbl);
         Result.Add('blocked', BlockedLbl);
         Result.Add('direct', DirectCapacityLbl);
-        Result.Add('legend', LegendLbl);
+        Result.Add('legend', LegendLbl + ' ' + ApprovalStyleLbl);
         Result.Add('noWorkingPortion', NoWorkingPortionLbl);
         Result.Add('hiddenDaysScope', HiddenDaysScopeLbl);
         Result.Add('problem', ProblemLbl);
@@ -746,6 +758,13 @@ codeunit 91300 CF_ProductionSchedulerMgt
         SelectScenarioLbl: Label 'Choose or create a scenario, then use Import Orders to copy the orders matching Schedule Options. BC is not changed until Commit to BC.';
         EditDraftLbl: Label 'Edit Draft Start';
         ZoomDocumentLbl: Label 'Zoom to Document';
+        UnzoomDocumentLbl: Label 'Unzoom';
+        ApprovedOnlyScopeLbl: Label 'Showing approved operations only (current committed scheduler approval). Capacity, planning and commit scope are not filtered. Use Show All to remove this approval filter.';
+        ApprovedStatusLbl: Label 'Approved';
+        ProblemDetailsLbl: Label 'Show Problem Details', Comment = 'Right-click action for problem operations; opens a scrollable list of reported issues without changing the draft.';
+        CloseLbl: Label 'Close';
+        UnapprovedStatusLbl: Label 'Unapproved';
+        UnapprovedOnlyScopeLbl: Label 'Showing unapproved operations only (no current committed scheduler approval). Draft approval alone does not count. Capacity, planning and commit scope are not filtered. Use Show All to remove this approval filter.';
         ResetDraftLbl: Label 'Reset Order Draft from BC';
         CommitOrderLbl: Label 'Commit This Order to BC';
         DraftScenarioLbl: Label 'Draft scenario';
@@ -771,7 +790,7 @@ codeunit 91300 CF_ProductionSchedulerMgt
         ManualLbl: Label 'Orders containing manually fixed routing operations are view-only. Use the standard routing page.';
         DateTimeErr: Label 'Enter a valid start date and time in the Business Central session time zone.';
         OperationErr: Label 'The operation no longer exists or its identifier is invalid. Refresh the scheduler.';
-        ScopeLbl: Label 'Draft only: edits and Auto Schedule do not update BC. Capacity replaces this scenario''s imported orders with draft allocations and includes competing BC orders. Other scenarios are excluded. Use Commit to BC to apply changes.';
+        ScopeLbl: Label 'Draft only: edits and Auto Schedule do not update BC. Capacity replaces this scenario''s imported orders with draft allocations and includes competing BC orders. Other scenarios are excluded. Use Commit to BC to apply changes. If Convert Planned to Firm Planned on Commit is enabled in setup (on by default), a successful commit also converts Planned orders when all unfinished operations are approved, including unchanged dates. BC may assign a new order number. The active scenario is remapped; other scenarios require reconciliation. Include Firm Planned in your status filters to keep converted orders visible.';
         TimeZoneLbl: Label 'All times use the Business Central session time zone, not the browser time zone.';
         TitleLbl: Label 'Production Scheduler';
         CurrentTimeLbl: Label 'Current time';
@@ -812,25 +831,29 @@ codeunit 91300 CF_ProductionSchedulerMgt
         LateLbl: Label 'Late';
         PendingLbl: Label 'Awaiting confirmation';
         ConfirmedLbl: Label 'Confirmed';
+        ApprovalStyleLbl: Label 'Unapproved scheduled operations use light green fill and an orange dashed border until current committed scheduler approval exists. Approved operations retain production-order status colours. Unscheduled operations retain their pale cream fill and dashed brown border. Red problem and late borders take precedence; finished operations retain status colours.';
         SearchLbl: Label 'Find order, item or operation (capacity totals do not change)';
         ResourceLbl: Label 'Resource';
         ConfirmationLbl: Label 'Planner confirmation';
         RoutingScopeLbl: Label 'Routing links for order %1: %2 visible; %3 hidden by the current view, filters or collapsed rows.', Comment = '%1 = order number, %2 = visible links, %3 = hidden links; substituted in the control';
         RoutingUnscheduledLbl: Label 'Schedule or confirm at least one step in this order to show routing links.';
-        DropHelpLbl: Label 'Drag an unscheduled step onto its assigned resource row to schedule it. Drag an individual timeline step horizontally to adjust its draft start. Click a step to highlight its routing links.';
+        DropHelpLbl: Label 'Drag an unscheduled step onto its assigned resource row to schedule it. Drag an individual timeline step horizontally to adjust its draft start using Drag Snap Minutes in setup (15 by default; use 1 for minute-level placement). Gold vertical guide lines with labels above and below the operation show requested start and estimated finish, not a capacity guarantee. An estimated finish beyond the display range uses a dashed guide at the edge. The estimate shifts the current elapsed duration for scheduled steps, or uses work minutes for unscheduled steps; calendars and capacity may change the saved finish. A faded dashed bar retains the requested position while saving; final dates and capacity come from the refreshed draft. Failed moves restore the original position and show an error. Click a step to highlight its routing links and its production order required due date at the end of that day. Dates outside the visible range have no marker; hidden due days use their compressed-axis boundary.';
+        RequestedStartLbl: Label 'Requested start';
+        EstimatedFinishLbl: Label 'Estimated finish (before recalculation)';
+        RequiredDueLbl: Label 'Required due';
         DropInvalidLbl: Label 'Drop an editable unplanned step onto its assigned resource row within the displayed dates and hours. Resource reassignment is not supported.';
         NonWorkingScopeLbl: Label '%1 non-working days hidden. %2 matching operations fall entirely on hidden days. %3 hidden days still contain allocated capacity. Use Show All Days to inspect them. Scheduling and daily capacity values are unchanged.', Comment = '%1 = hidden days, %2 = operations, %3 = hidden days with load; substituted in the control';
         NoWorkingDaysLbl: Label 'No visible days in this date range. Use Date View > Show Weekends, Show All Days or change Schedule Options. Check resource calendars if non-working days are hidden.';
         HiddenClippedStartLbl: Label 'The actual start is outside the visible periods. Right-click and choose Edit Draft Start instead of dragging this clipped bar.';
         HiddenDragRangeLbl: Label 'Drop within the visible dates and hours, or right-click the step and choose Edit Draft Start.';
-        SelectionHelpLbl: Label 'Ctrl+click (Cmd+click on Mac) steps to add or remove them from the selection. The last clicked step is shown in the details. Use Select Routing Chain or Select Following Steps to select related steps of the same production order routing, then Lock Selected or Unlock Selected. Locked steps show a lock icon, cannot be dragged or edited manually and keep their draft position. Right-click a step to lock or unlock it. Dragging always moves one step only.';
+        SelectionHelpLbl: Label 'Ctrl+click (Cmd+click on Mac) steps to add or remove them from the selection. The last clicked step is shown in the details. Use Select Routing Chain or Select Following Steps to select related steps of the same production order routing, then Lock Position Selected or Unlock Position Selected. These actions only lock or unlock draft positions; they do not commit to Business Central. Zoom to Document on the selection toolbar focuses the selected order; it changes to Unzoom to restore the previous view. Locked steps show a lock icon, cannot be dragged or edited manually and keep their draft position. Right-click a step to lock or unlock it. Dragging always moves one step only.';
         SelectionToolbarLbl: Label 'Step selection';
         SelectedCountLbl: Label '%1 selected', Comment = '%1 = number of selected steps, substituted in the control';
         SelectChainLbl: Label 'Select Routing Chain';
         SelectFollowingLbl: Label 'Select Following Steps';
         ClearSelectionLbl: Label 'Clear Selection';
-        LockSelectedLbl: Label 'Lock Selected';
-        UnlockSelectedLbl: Label 'Unlock Selected';
+        LockSelectedLbl: Label 'Lock Position Selected';
+        UnlockSelectedLbl: Label 'Unlock Position Selected';
         LockStepLbl: Label 'Lock Position';
         UnlockStepLbl: Label 'Unlock Position';
         PositionLockedLbl: Label 'Position locked';
