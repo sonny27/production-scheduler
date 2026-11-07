@@ -41,6 +41,7 @@
     const draftStates = ["", "saving", "saved", "failed", "error"];
     const hours = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
     const dates = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+    const weekdays = new Intl.DateTimeFormat(undefined, { weekday: "short", timeZone: "UTC" });
     const months = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
 
     function label(name) {
@@ -1235,7 +1236,7 @@
                 const text = level.unit === "month" ? months.format(date)
                     : level.unit === "week" ? `${label("week")} ${dates.format(date)}`
                         : level.unit === "hour" ? clockTime(period.start)
-                            : zoom === "hour" || zoom === "day" ? dates.format(date) : String(date.getUTCDate());
+                            : zoom === "hour" || zoom === "day" ? `${weekdays.format(date)} ${dates.format(date)}` : String(date.getUTCDate());
                 const cell = element("div", "cf-date", text);
                 cell.style.left = period.left / axis.width * 100 + "%";
                 cell.style.width = period.width / axis.width * 100 + "%";
